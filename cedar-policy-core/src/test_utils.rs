@@ -294,6 +294,14 @@ pub enum OriginalInput<'a> {
     /// A JSON value. We will not incur the cost of formatting this to
     /// string unless it is actually needed.
     Json(&'a serde_json::Value),
+    /// The error does not come from a specific input source.
+    None,
+}
+
+impl<'a> From<()> for OriginalInput<'a> {
+    fn from(value: ()) -> Self {
+        Self::None
+    }
 }
 
 impl<'a> From<&'a str> for OriginalInput<'a> {
@@ -313,6 +321,7 @@ impl<'a> std::fmt::Display for OriginalInput<'a> {
         match self {
             Self::String(s) => write!(f, "{s}"),
             Self::Json(val) => write!(f, "{}", serde_json::to_string_pretty(val).unwrap()),
+            Self::None => Ok(()),
         }
     }
 }
@@ -341,6 +350,9 @@ pub fn expect_err<'a>(
                 // need to convert to string so we can compute the underlines
                 let src = serde_json::to_string_pretty(val).unwrap();
                 msg.expect_underlines_match(Some(&src), err);
+            }
+            OriginalInput::None => {
+                panic!("Cannot expect underlined text without original input.");
             }
         }
     }
