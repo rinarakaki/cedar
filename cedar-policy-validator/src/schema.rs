@@ -20,7 +20,7 @@
 //! `member_of` relation from the schema is reversed and the transitive closure is
 //! computed to obtain a `descendants` relation.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{hash_map::Entry, BTreeSet, HashMap, HashSet};
 
 use cedar_policy_core::{
     ast::{Entity, EntityType, EntityUID, Name},
@@ -373,7 +373,7 @@ impl ValidatorSchema {
         let mut undeclared_e = undeclared_parent_entities
             .into_iter()
             .map(|n| n.to_string())
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         // Looking at entity types, we need to check entity references in
         // attribute types. We already know that all elements of the
         // `descendants` list were declared because the list is a result of
@@ -393,7 +393,7 @@ impl ValidatorSchema {
         let undeclared_a = undeclared_parent_actions
             .into_iter()
             .map(|n| n.to_string())
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         // For actions, we check entity references in the context attribute
         // types and `appliesTo` lists. See the `entity_types` loop for why the
         // `descendants` list is not checked.
@@ -448,7 +448,7 @@ impl ValidatorSchema {
     fn check_undeclared_in_type(
         ty: &Type,
         entity_types: &HashMap<Name, ValidatorEntityType>,
-        undeclared_types: &mut HashSet<String>,
+        undeclared_types: &mut BTreeSet<String>,
     ) {
         match ty {
             Type::EntityOrRecord(EntityRecordKind::Entity(lub)) => {
@@ -658,6 +658,7 @@ mod test {
     use crate::{SchemaType, SchemaTypeVariant};
 
     use cedar_policy_core::ast::RestrictedExpr;
+    use cedar_policy_core::test_utils::{expect_err, ExpectedErrorMessageBuilder};
     use cool_asserts::assert_matches;
     use serde_json::json;
 
@@ -822,7 +823,7 @@ mod test {
         match schema {
             Ok(_) => panic!("try_into should have failed"),
             Err(SchemaError::UndeclaredEntityTypes(v)) => {
-                assert_eq!(v, HashSet::from(["Bar::Group".to_string()]))
+                assert_eq!(v, BTreeSet::from(["Bar::Group".to_string()]))
             }
             _ => panic!("Unexpected error from try_into"),
         }
@@ -842,18 +843,18 @@ mod test {
                 }
             }
         }});
-        let schema_file: SchemaFragment = serde_json::from_value(src).expect("Parse Error");
+        let schema_file: SchemaFragment = serde_json::from_value(src.clone()).expect("Parse Error");
         let schema: Result<ValidatorSchema> = schema_file.try_into();
-        match schema {
-            Ok(_) => panic!("try_into should have failed"),
-            Err(SchemaError::UndeclaredEntityTypes(v)) => {
-                assert_eq!(
-                    v,
-                    HashSet::from(["Bar::Photo".to_string(), "Bar::User".to_string()])
-                )
-            }
-            _ => panic!("Unexpected error from try_into"),
-        }
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                // FIXME: remove brackets, use backtick instead of quotes
+                &ExpectedErrorMessageBuilder::error("undeclared entity type(s): {\"Bar::Photo\", \"Bar::User\"}")
+                    .help("any entity types appearing anywhere in a schema need to be declared in `entityTypes`")
+                    .build()
+            )
+        );
     }
 
     // Undefined action "photo_actions"
@@ -882,13 +883,19 @@ mod test {
                 }
             }
         });
-        let schema_file: NamespaceDefinition = serde_json::from_value(src).expect("Parse Error");
+        let schema_file: NamespaceDefinition =
+            serde_json::from_value(src.clone()).expect("Parse Error");
         let schema: Result<ValidatorSchema> = schema_file.try_into();
-        match schema {
-            Ok(_) => panic!("from_schema_file should have failed"),
-            Err(SchemaError::UndeclaredActions(v)) => assert_eq!(v.len(), 1),
-            _ => panic!("Unexpected error from from_schema_file"),
-        }
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                // FIXME: remove brackets, use backtick instead of quotes
+                &ExpectedErrorMessageBuilder::error(r#"undeclared action(s): {"Action::\"photo_action\""}"#)
+                    .help("any actions appearing in `memberOf` need to be declared in `actions`")
+                    .build()
+            )
+        );
     }
 
     // Trivial cycle in action hierarchy
@@ -904,14 +911,17 @@ mod test {
                 }
             }
         });
-        let schema_file: NamespaceDefinition = serde_json::from_value(src).expect("Parse Error");
+        let schema_file: NamespaceDefinition =
+            serde_json::from_value(src.clone()).expect("Parse Error");
         let schema: Result<ValidatorSchema> = schema_file.try_into();
-        assert_matches!(
-            schema,
-            Err(SchemaError::CycleInActionHierarchy(euid)) => {
-                assert_eq!(euid, r#"Action::"view_photo""#.parse().unwrap());
-            }
-        )
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("cycle in action hierarchy containing `Action::\"view_photo\"`")
+                    .build()
+            )
+        );
     }
 
     // Slightly more complex cycle in action hierarchy
@@ -936,13 +946,17 @@ mod test {
                 }
             }
         });
-        let schema_file: NamespaceDefinition = serde_json::from_value(src).expect("Parse Error");
+        let schema_file: NamespaceDefinition =
+            serde_json::from_value(src.clone()).expect("Parse Error");
         let schema: Result<ValidatorSchema> = schema_file.try_into();
-        assert_matches!(
-            schema,
-            // The exact action reported as being in the cycle isn't deterministic.
-            Err(SchemaError::CycleInActionHierarchy(_)),
-        )
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("cycle in action hierarchy containing `Action::\"edit_photo\"`")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1049,7 +1063,7 @@ mod test {
         let schema: Result<ValidatorSchema> = schema_json.try_into();
         match schema {
             Err(SchemaError::UndeclaredEntityTypes(tys)) => {
-                assert_eq!(tys, HashSet::from(["C::D::Foo".to_string()]))
+                assert_eq!(tys, BTreeSet::from(["C::D::Foo".to_string()]))
             }
             _ => panic!("Schema construction should have failed due to undeclared entity type."),
         }
@@ -1127,8 +1141,7 @@ mod test {
 
     #[test]
     fn cannot_declare_action_in_group_when_prohibited() {
-        let schema_json: SchemaFragment = serde_json::from_str(
-            r#"
+        let src = json!(
             {"": {
                 "entityTypes": {},
                 "actions": {
@@ -1144,28 +1157,24 @@ mod test {
                     }
                 }
               }}
-            "#,
-        )
-        .expect("Expected valid schema");
+        );
+        let schema_json: SchemaFragment =
+            serde_json::from_value(src.clone()).expect("Expected valid schema");
 
         let schema = ValidatorSchemaFragment::from_schema_fragment(
             schema_json,
             ActionBehavior::ProhibitAttributes,
             Extensions::all_available(),
         );
-        match schema {
-            Err(SchemaError::UnsupportedFeature(UnsupportedFeature::ActionAttributes(actions))) => {
-                assert_eq!(
-                    actions.into_iter().collect::<HashSet<_>>(),
-                    HashSet::from([
-                        "view_photo".to_string(),
-                        "edit_photo".to_string(),
-                        "delete_photo".to_string(),
-                    ])
-                )
-            }
-            _ => panic!("Did not see expected error."),
-        }
+
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("unsupported feature used in schema: action declared with attributes: [edit_photo, delete_photo, view_photo]")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1211,8 +1220,16 @@ mod test {
     #[test]
     fn test_entity_type_namespace_parse_error() {
         let src = json!({"type": "Entity", "name": "::Foo"});
-        let schema_ty: std::result::Result<SchemaType, _> = serde_json::from_value(src);
-        assert!(schema_ty.is_err());
+        let schema_ty: std::result::Result<SchemaType, _> = serde_json::from_value(src.clone());
+        assert_matches!(schema_ty, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(SchemaError::Serde(e)),
+                // FIXME: Don't state id twice. Better wording
+                &ExpectedErrorMessageBuilder::error("failed to parse schema: invalid entity type `::Foo`: unexpected token `::`")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1600,15 +1617,18 @@ mod test {
 
         let schema = ValidatorSchema::from_schema_fragments([fragment1, fragment2]);
 
-        match schema {
-            Err(SchemaError::DuplicateCommonType(s)) if s.contains("A::MyLong") => (),
-            _ => panic!("should have errored because schema fragments have duplicate types"),
-        };
+        assert_matches!(schema , Err(e) =>
+            expect_err(
+                (),
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("duplicate common type `A::MyLong`").build()
+            )
+        );
     }
 
     #[test]
     fn undeclared_type_in_attr() {
-        let fragment: SchemaFragment = serde_json::from_value(json!({
+        let src = json!({
             "": {
                 "commonTypes": { },
                 "entityTypes": {
@@ -1623,20 +1643,22 @@ mod test {
                 },
                 "actions": {}
             }
-        }))
-        .unwrap();
-        match TryInto::<ValidatorSchema>::try_into(fragment) {
-            Err(SchemaError::UndeclaredCommonTypes(_)) => (),
-            s => panic!(
-                "Expected Err(SchemaError::UndeclaredCommonType), got {:?}",
-                s
-            ),
-        }
+        });
+        let fragment: SchemaFragment = serde_json::from_value(src.clone()).unwrap();
+        assert_matches!(TryInto::<ValidatorSchema>::try_into(fragment) , Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error( r#"undeclared common type(s), or common type(s) used in the declaration of another common type: {"MyLong"}"#)
+                    .help("any common types used in entity or context attributes need to be declared in `commonTypes`, and currently, common types may not reference other common types")
+                    .build()
+            )
+        );
     }
 
     #[test]
     fn undeclared_type_in_type_def() {
-        let fragment: SchemaFragment = serde_json::from_value(json!({
+        let src = json!({
             "": {
                 "commonTypes": {
                     "a": { "type": "b" }
@@ -1644,20 +1666,22 @@ mod test {
                 "entityTypes": { },
                 "actions": {}
             }
-        }))
-        .unwrap();
-        match TryInto::<ValidatorSchema>::try_into(fragment) {
-            Err(SchemaError::UndeclaredCommonTypes(_)) => (),
-            s => panic!(
-                "Expected Err(SchemaError::UndeclaredCommonType), got {:?}",
-                s
-            ),
-        }
+        });
+        let fragment: SchemaFragment = serde_json::from_value(src.clone()).unwrap();
+        assert_matches!(TryInto::<ValidatorSchema>::try_into(fragment) , Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error( r#"undeclared common type(s), or common type(s) used in the declaration of another common type: {"b"}"#)
+                    .help("any common types used in entity or context attributes need to be declared in `commonTypes`, and currently, common types may not reference other common types")
+                    .build()
+            )
+        );
     }
 
     #[test]
     fn shape_not_record() {
-        let fragment: SchemaFragment = serde_json::from_value(json!({
+        let src = json!({
             "": {
                 "commonTypes": {
                     "MyLong": { "type": "Long" }
@@ -1669,15 +1693,17 @@ mod test {
                 },
                 "actions": {}
             }
-        }))
-        .unwrap();
-        match TryInto::<ValidatorSchema>::try_into(fragment) {
-            Err(SchemaError::ContextOrShapeNotRecord(_)) => (),
-            s => panic!(
-                "Expected Err(SchemaError::ContextOrShapeNotRecord), got {:?}",
-                s
-            ),
-        }
+        });
+        let fragment: SchemaFragment = serde_json::from_value(src.clone()).unwrap();
+        assert_matches!(TryInto::<ValidatorSchema>::try_into(fragment), Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("Shape for entity type User is declared with a type other than `Record`")
+                    .help("entity type shapes must have type `Record`")
+                    .build()
+            )
+        );
     }
 
     /// This test checks for regressions on (adapted versions of) the examples
@@ -1704,9 +1730,17 @@ mod test {
                 "actions": {}
             }
         });
-        let fragment = serde_json::from_value::<SchemaFragment>(bad1); // should this fail in the future?
-                                                                       // The future has come?
-        assert!(fragment.is_err());
+        let fragment = serde_json::from_value::<SchemaFragment>(bad1.clone()); // should this fail in the future?
+
+        assert_matches!(fragment, Err(e) =>
+            expect_err(
+                &bad1,
+                &miette::Report::new(SchemaError::Serde(e)),
+                // FIXME: Don't state id twice. Better wording
+                &ExpectedErrorMessageBuilder::error("failed to parse schema: invalid id `User // comment`: `Id` needs to be normalized (e.g., whitespace removed): `User // comment`")
+                    .build()
+            )
+        );
 
         // non-normalized schema namespace
         let bad2 = json!({
@@ -1719,9 +1753,16 @@ mod test {
                 "actions": {}
             }
         });
-        let fragment = serde_json::from_value::<SchemaFragment>(bad2); // should this fail in the future?
-                                                                       // The future has come?
-        assert!(fragment.is_err());
+        let fragment = serde_json::from_value::<SchemaFragment>(bad2.clone()); // should this fail in the future?
+        assert_matches!(fragment, Err(e) =>
+            expect_err(
+                &bad2,
+                &miette::Report::new(SchemaError::Serde(e)),
+                // FIXME: Don't state id twice. Better wording
+                &ExpectedErrorMessageBuilder::error("failed to parse schema: invalid namespace `ABC     :: //comment \n XYZ  `: `Name` needs to be normalized (e.g., whitespace removed): `ABC     :: //comment \n XYZ  `")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1888,9 +1929,19 @@ mod test {
             },
         });
         let schema_fragment =
-            serde_json::from_value::<SchemaFragment>(src).expect("Failed to parse schema");
+            serde_json::from_value::<SchemaFragment>(src.clone()).expect("Failed to parse schema");
         let schema: std::result::Result<ValidatorSchema, _> = schema_fragment.try_into();
-        schema.expect_err("Schema should fail to construct as the normalization rules treat any qualification as starting from the root");
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                // FIXME: should be just say `Foo::Action::"read"`.
+                // FIXME: suggests possible replacement from declared actions in `help`
+                &ExpectedErrorMessageBuilder::error( r#"undeclared action(s): {"Foo::Action::\"read\""}"#)
+                    .help("any actions appearing in `memberOf` need to be declared in `actions`")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1956,9 +2007,16 @@ mod test {
                 }
               }
         );
-        let schema = ValidatorSchema::from_json_value(src, Extensions::all_available());
-        assert_matches!(schema, Err(SchemaError::UndeclaredCommonTypes(types)) =>
-            assert_eq!(types, HashSet::from(["Demo::id".to_string()])));
+        let schema = ValidatorSchema::from_json_value(src.clone(), Extensions::all_available());
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error( r#"undeclared common type(s), or common type(s) used in the declaration of another common type: {"Demo::id"}"#)
+                    .help("any common types used in entity or context attributes need to be declared in `commonTypes`, and currently, common types may not reference other common types")
+                    .build()
+            )
+        );
     }
 
     #[test]
@@ -1990,8 +2048,16 @@ mod test {
                 }
               }
         );
-        let schema = ValidatorSchema::from_json_value(src, Extensions::all_available());
-        assert_matches!(schema, Err(SchemaError::UndeclaredCommonTypes(types)) =>
-            assert_eq!(types, HashSet::from(["Demo::id".to_string()])));
+        let schema = ValidatorSchema::from_json_value(src.clone(), Extensions::all_available());
+        // FIXME: list of declarations should not include braces. Id's should be in backticks instead of quotes
+        assert_matches!(schema, Err(e) =>
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error( r#"undeclared common type(s), or common type(s) used in the declaration of another common type: {"Demo::id"}"#)
+                    .help("any common types used in entity or context attributes need to be declared in `commonTypes`, and currently, common types may not reference other common types")
+                    .build()
+            )
+        );
     }
 }

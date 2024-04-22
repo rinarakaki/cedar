@@ -17,7 +17,7 @@
 //! This module contains the definition of `ValidatorNamespaceDef` and of types
 //! it relies on
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use cedar_policy_core::{
     ast::{
@@ -669,7 +669,7 @@ impl ValidatorNamespaceDef {
                     type_name.prefix_namespace_if_unqualified(default_namespace.cloned());
                 Ok(WithUnresolvedTypeDefs::new(move |typ_defs| {
                     typ_defs.get(&defined_type_name).cloned().ok_or(
-                        SchemaError::UndeclaredCommonTypes(HashSet::from([
+                        SchemaError::UndeclaredCommonTypes(BTreeSet::from([
                             defined_type_name.to_string()
                         ])),
                     )
