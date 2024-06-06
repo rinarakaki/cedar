@@ -1740,6 +1740,37 @@ impl PolicySet {
         Ok(est)
     }
 
+    /// Get the human-readable Cedar syntax representation of this policy set.
+    /// This function is primarly intended for converting JSON policies into the
+    /// human-readable syntax, but it will also return the original policy text
+    /// when given a policy parsed from the human-readable syntax.
+    ///
+    /// It will return `None` if there are any linked policies in the policy set
+    /// because they cannot be directly rendered in Cedar syntax.
+    ///
+    /// It also does not format the policy acording to any particular rules.
+    /// Policy formatting can be done through the Cedar policy CLI or
+    /// the `cedar-policy-formatter` crate.
+    pub fn to_cedar(&self) -> Option<String> {
+        let policies = self
+            .policies
+            .values()
+            // We'd like to print policies in a deterministic order, so we sort
+            // before printing, hoping that the size of policiy sets is fairly
+            // small. We could instead use a `BTreeSet` to store polcies and
+            // templates.
+            .sorted_by_key(|p| AsRef::<str>::as_ref(p.id()))
+            .map(|p| p.to_cedar())
+            .collect::<Option<Vec<_>>>()?;
+        let templates = self
+            .templates
+            .values()
+            .sorted_by_key(|t| AsRef::<str>::as_ref(t.id()))
+            .map(|t| t.to_cedar());
+
+        Some(policies.into_iter().chain(templates).join("\n\n"))
+    }
+
     /// Create a fresh empty `PolicySet`
     pub fn new() -> Self {
         Self {
@@ -2247,6 +2278,21 @@ impl Template {
         let est = self.lossless.est()?;
         serde_json::to_value(est).map_err(Into::into)
     }
+
+    /// Get the human-readable Cedar syntax representation of this template.
+    /// This function is primarly intended for converting JSON policies into the
+    /// human-readable syntax, but it will also return the original policy text
+    /// when given a policy parsed from the human-readable syntax.
+    ///
+    /// It also does not format the policy acording to any particular rules.
+    /// Policy formatting can be done through the Cedar policy CLI or
+    /// the `cedar-policy-formatter` crate.
+    pub fn to_cedar(&self) -> String {
+        match &self.lossless {
+            LosslessPolicy::Est(_) => self.ast.to_string(),
+            LosslessPolicy::Text { text, .. } => text.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for Template {
@@ -2650,6 +2696,31 @@ impl Policy {
     pub fn to_json(&self) -> Result<serde_json::Value, PolicyToJsonError> {
         let est = self.lossless.est()?;
         serde_json::to_value(est).map_err(Into::into)
+    }
+
+    /// Get the human-readable Cedar syntax representation of this policy. This
+    /// function is primarly intended for converting JSON policies into the
+    /// human-readable syntax, but it will also return the original policy text
+    /// when given a policy parsed from the human-readable syntax.
+    ///
+    /// It will return `None` for linked policies because they cannot be
+    /// directly rendered in Cedar syntax. You can instead render the unlinked
+    /// template to JSON.
+    ///
+    /// It also does not format the policy acording to any particular rules.
+    /// Policy formatting can be done through the Cedar policy CLI or
+    /// the `cedar-policy-formatter` crate.
+    pub fn to_cedar(&self) -> Option<String> {
+        match &self.lossless {
+            LosslessPolicy::Est(_) => Some(self.ast.to_string()),
+            LosslessPolicy::Text { text, slots } => {
+                if slots.is_empty() {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Get all the unknown entities from the policy

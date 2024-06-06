@@ -122,6 +122,8 @@ pub struct TranslatePolicyArgs {
 pub enum PolicyTranslationDirection {
     /// Human policy syntax -> JSON
     HumanToJson,
+    /// JSON -> Human policy syntax
+    JsonToHuman,
 }
 
 #[derive(Args, Debug)]
@@ -721,6 +723,13 @@ pub fn format_policies(args: &FormatArgs) -> CedarExitCode {
     }
 }
 
+fn translate_policy_to_human(json_src: impl AsRef<str>) -> Result<String> {
+    let policy_set = PolicySet::from_json_str(json_src)?;
+    policy_set.to_cedar().ok_or(miette!(
+        "Unable to translate policy set containing template linked policies."
+    ))
+}
+
 fn translate_policy_to_json(natural_src: impl AsRef<str>) -> Result<String> {
     let policy_set = PolicySet::from_str(natural_src.as_ref())?;
     let output = policy_set.to_json()?.to_string();
@@ -730,6 +739,7 @@ fn translate_policy_to_json(natural_src: impl AsRef<str>) -> Result<String> {
 fn translate_policy_inner(args: &TranslatePolicyArgs) -> Result<String> {
     let translate = match args.direction {
         PolicyTranslationDirection::HumanToJson => translate_policy_to_json,
+        PolicyTranslationDirection::JsonToHuman => translate_policy_to_human,
     };
     read_from_file_or_stdin(args.input_file.clone(), "policy").and_then(translate)
 }
