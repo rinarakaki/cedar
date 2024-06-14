@@ -14,37 +14,35 @@
  * limitations under the License.
  */
 
-use cedar_policy_core::ast::Expr;
+use cedar_policy_core::ast::{Expr, ExprBuilder, Literal, Var};
 
 use crate::types::{EffectSet, Type};
 
 /// TypecheckAnswer holds the result of typechecking an expression.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum TypecheckAnswer<'a> {
+pub(crate) enum TypecheckAnswer<'a, T> {
     /// Typechecking succeeded, and we know the type and a possibly empty effect
     /// set for the expression. The effect set is the set of
     /// (expression, attribute) pairs that are known as safe to access under the
     /// assumption that the expression evaluates to true.
     TypecheckSuccess {
-        expr_type: Expr<Option<Type>>,
+        expr_type: T,
         expr_effect: EffectSet<'a>,
     },
     /// Typechecking failed. We might still be able to know the type of the
     /// overall expression, but not always. For instance, an `&&` expression
     /// will always have type `boolean`, so we populate `expr_recovery_type`
     /// with `Some(boolean)` even when there is a type error in the expression.
-    TypecheckFail {
-        expr_recovery_type: Expr<Option<Type>>,
-    },
+    TypecheckFail { expr_recovery_type: T },
 
     /// RecursionLimit Reached
     RecursionLimit,
 }
 
-impl<'a> TypecheckAnswer<'a> {
+impl<'a, T: AsRef<Option<Type>>> TypecheckAnswer<'a, T> {
     /// Construct a successful TypecheckAnswer with a type but with an empty
     /// effect set.
-    pub fn success(expr_type: Expr<Option<Type>>) -> Self {
+    pub fn success(expr_type: T) -> Self {
         Self::TypecheckSuccess {
             expr_type,
             expr_effect: EffectSet::new(),
@@ -52,7 +50,7 @@ impl<'a> TypecheckAnswer<'a> {
     }
 
     /// Construct a successful TypecheckAnswer with a type and an effect.
-    pub fn success_with_effect(expr_type: Expr<Option<Type>>, expr_effect: EffectSet<'a>) -> Self {
+    pub fn success_with_effect(expr_type: T, expr_effect: EffectSet<'a>) -> Self {
         Self::TypecheckSuccess {
             expr_type,
             expr_effect,
@@ -60,7 +58,7 @@ impl<'a> TypecheckAnswer<'a> {
     }
 
     /// Construct a failing TypecheckAnswer with a type.
-    pub fn fail(expr_type: Expr<Option<Type>>) -> Self {
+    pub fn fail(expr_type: T) -> Self {
         Self::TypecheckFail {
             expr_recovery_type: expr_type,
         }
@@ -75,11 +73,11 @@ impl<'a> TypecheckAnswer<'a> {
             TypecheckAnswer::TypecheckFail { expr_recovery_type } => Some(expr_recovery_type),
             TypecheckAnswer::RecursionLimit => None,
         }
-        .and_then(|e| e.data().as_ref())
+        .and_then(|e| e.as_ref().as_ref())
             == Some(ty)
     }
 
-    pub fn into_typed_expr(self) -> Option<Expr<Option<Type>>> {
+    pub fn into_typed_expr(self) -> Option<T> {
         match self {
             TypecheckAnswer::TypecheckSuccess { expr_type, .. } => Some(expr_type),
             TypecheckAnswer::TypecheckFail { expr_recovery_type } => Some(expr_recovery_type),
@@ -132,7 +130,7 @@ impl<'a> TypecheckAnswer<'a> {
     /// TypecheckFail, otherwise it will be returned unaltered.
     pub fn then_typecheck<F>(self, f: F) -> Self
     where
-        F: FnOnce(Expr<Option<Type>>, EffectSet<'a>) -> TypecheckAnswer<'a>,
+        F: FnOnce(T, EffectSet<'a>) -> TypecheckAnswer<'a, T>,
     {
         match self {
             TypecheckAnswer::TypecheckSuccess {
@@ -151,11 +149,11 @@ impl<'a> TypecheckAnswer<'a> {
     /// same manner as in `then_typecheck`, but accounts for the all the
     /// TypecheckAnswers.
     pub fn sequence_all_then_typecheck<F>(
-        answers: impl IntoIterator<Item = TypecheckAnswer<'a>>,
+        answers: impl IntoIterator<Item = TypecheckAnswer<'a, T>>,
         f: F,
-    ) -> TypecheckAnswer<'a>
+    ) -> TypecheckAnswer<'a, T>
     where
-        F: FnOnce(Vec<(Expr<Option<Type>>, EffectSet<'a>)>) -> TypecheckAnswer<'a>,
+        F: FnOnce(Vec<(T, EffectSet<'a>)>) -> TypecheckAnswer<'a, T>,
     {
         let mut unwrapped = Vec::new();
         let mut any_failed = false;
@@ -185,5 +183,75 @@ impl<'a> TypecheckAnswer<'a> {
         } else {
             ans
         }
+    }
+}
+
+pub trait ExprTypeBuilder<T: AsRef<Option<Type>>> {
+    fn new() -> Self;
+    fn with_data(data: Option<Type>) -> Self;
+    fn with_same_source_loc<U>(self, expr: &Expr<U>) -> Self;
+
+
+    fn val(self, v: impl Into<Literal>) -> T;
+    fn var(self, v: Var) -> T;
+    fn and(self, e1: T, e2: T) -> T;
+}
+
+impl ExprTypeBuilder<Expr<Option<Type>>> for ExprBuilder<Option<Type>> {
+    fn new() -> Self {
+        ExprBuilder::new()
+    }
+
+    fn with_data(data: Option<Type>) -> Self {
+        ExprBuilder::with_data(data)
+    }
+
+    fn with_same_source_loc<U>(self, expr: &Expr<U>) -> Self {
+        self.with_same_source_loc(expr)
+    }
+
+    fn and(self, e1: Expr<Option<Type>>, e2: Expr<Option<Type>>) -> Expr<Option<Type>> {
+        self.and(e1, e2)
+    }
+    
+    fn val(self, v: impl Into<Literal>) -> Expr<Option<Type>> {
+        self.val(v)
+    }
+ 
+    fn var(self, v: Var) -> Expr<Option<Type>> {
+        self.var(v)
+    }
+}
+
+struct TypeBuilder(Option<Type>);
+
+impl AsRef<Option<Type>> for TypeBuilder {
+    fn as_ref(&self) -> &Option<Type> {
+        &self.0
+    }
+}
+
+impl ExprTypeBuilder<TypeBuilder> for TypeBuilder {
+    fn new() -> Self {
+        Self(None)
+    }
+    fn with_data(data: Option<Type>) -> Self {
+        Self(data)
+    }
+
+    fn with_same_source_loc<U>(self, _expr: &Expr<U>) -> Self {
+        self
+    }
+
+    fn and(self, _e1: TypeBuilder, _e2: TypeBuilder) -> TypeBuilder {
+        self
+    }
+    
+    fn val(self, _v: impl Into<Literal>) -> TypeBuilder {
+        self
+    }
+    
+    fn var(self, _v: Var) -> TypeBuilder {
+        self
     }
 }

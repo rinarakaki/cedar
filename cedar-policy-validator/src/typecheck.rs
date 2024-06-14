@@ -21,6 +21,7 @@
 mod test;
 
 mod typecheck_answer;
+use typecheck_answer::ExprTypeBuilder;
 pub(crate) use typecheck_answer::TypecheckAnswer;
 
 use std::{
@@ -369,13 +370,13 @@ impl<'a> Typechecker<'a> {
     /// typechecking contains the type of the expression, any current effect of
     /// the expression, and a flag indicating whether the expression
     /// successfully typechecked.
-    fn typecheck<'b>(
+    fn typecheck<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
         e: &'b Expr,
         type_errors: &mut Vec<ValidationError>,
-    ) -> TypecheckAnswer<'b> {
+    ) -> TypecheckAnswer<'b, U> {
         #[cfg(not(target_arch = "wasm32"))]
         if stacker::remaining_stack().unwrap_or(0) < REQUIRED_STACK_SPACE {
             return TypecheckAnswer::RecursionLimit;
@@ -385,7 +386,7 @@ impl<'a> Typechecker<'a> {
             // Principal, resource, and context have types defined by
             // the request type.
             ExprKind::Var(Var::Principal) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(request_env.principal_type()))
+                T::with_data(Some(request_env.principal_type()))
                     .with_same_source_loc(e)
                     .var(Var::Principal),
             ),
@@ -396,7 +397,7 @@ impl<'a> Typechecker<'a> {
             ExprKind::Var(Var::Action) => {
                 match request_env.action_type(self.schema) {
                     Some(ty) => TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(ty))
+                        T::with_data(Some(ty))
                             .with_same_source_loc(e)
                             .var(Var::Action),
                     ),
@@ -407,26 +408,26 @@ impl<'a> Typechecker<'a> {
                     // public entry points, but it can occur if calling
                     // `typecheck` directly which happens in our tests.
                     None => TypecheckAnswer::fail(
-                        ExprBuilder::new().with_same_source_loc(e).var(Var::Action),
+                        T::new().with_same_source_loc(e).var(Var::Action),
                     ),
                 }
             }
             ExprKind::Var(Var::Resource) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(request_env.resource_type()))
+                T::with_data(Some(request_env.resource_type()))
                     .with_same_source_loc(e)
                     .var(Var::Resource),
             ),
             ExprKind::Var(Var::Context) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(request_env.context_type()))
+                T::with_data(Some(request_env.context_type()))
                     .with_same_source_loc(e)
                     .var(Var::Context),
             ),
             ExprKind::Unknown(u) => {
-                TypecheckAnswer::fail(ExprBuilder::with_data(None).unknown(u.clone()))
+                TypecheckAnswer::fail(T::with_data(None).unknown(u.clone()))
             }
             // Template Slots, always has to be an entity.
             ExprKind::Slot(slotid) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(if slotid.is_principal() {
+                T::with_data(Some(if slotid.is_principal() {
                     request_env
                         .principal_slot()
                         .clone()
@@ -447,18 +448,18 @@ impl<'a> Typechecker<'a> {
 
             // Literal booleans get singleton type according to their value.
             ExprKind::Lit(Literal::Bool(val)) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(Type::singleton_boolean(*val)))
+                T::with_data(Some(Type::singleton_boolean(*val)))
                     .with_same_source_loc(e)
                     .val(*val),
             ),
             // Other literal primitive values have the type of that primitive value.
             ExprKind::Lit(Literal::Long(val)) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(Type::primitive_long()))
+                T::with_data(Some(Type::primitive_long()))
                     .with_same_source_loc(e)
                     .val(*val),
             ),
             ExprKind::Lit(Literal::String(val)) => TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(Type::primitive_string()))
+                T::with_data(Some(Type::primitive_string()))
                     .with_same_source_loc(e)
                     .val(val.clone()),
             ),
@@ -476,19 +477,19 @@ impl<'a> Typechecker<'a> {
                     // try to access it later, so all attributes will have the
                     // bottom type.
                     None if self.mode.is_partial() => TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(Type::possibly_unspecified_entity_reference(
+                        T::with_data(Some(Type::possibly_unspecified_entity_reference(
                             euid.entity_type().clone(),
                         )))
                         .with_same_source_loc(e)
                         .val(euid.clone()),
                     ),
                     Some(ty) => TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(ty))
+                        T::with_data(Some(ty))
                             .with_same_source_loc(e)
                             .val(euid.clone()),
                     ),
                     None => TypecheckAnswer::fail(
-                        ExprBuilder::new().with_same_source_loc(e).val(euid.clone()),
+                        T::new().with_same_source_loc(e).val(euid.clone()),
                     ),
                 }
             }
@@ -510,7 +511,7 @@ impl<'a> Typechecker<'a> {
                 ans_test.then_typecheck(|typ_test, eff_test| {
                     // If the guard has type `true` or `false`, we short circuit,
                     // looking at only the relevant branch.
-                    if typ_test.data() == &Some(Type::singleton_boolean(true)) {
+                    if typ_test.as_ref() == &Some(Type::singleton_boolean(true)) {
                         // The `then` branch needs to be typechecked using the
                         // prior effect of the `if` and any new effect generated
                         // by `test`. This enables an attribute access
@@ -530,7 +531,7 @@ impl<'a> Typechecker<'a> {
                                 eff_then.union(&eff_test),
                             )
                         })
-                    } else if typ_test.data() == &Some(Type::singleton_boolean(false)) {
+                    } else if typ_test.as_ref() == &Some(Type::singleton_boolean(false)) {
                         // The `else` branch cannot use the `test` effect since
                         // we know in the `else` branch that the condition
                         // evaluated to `false`. It still can use the original
@@ -566,12 +567,12 @@ impl<'a> Typechecker<'a> {
                             ans_else.then_typecheck(|typ_else, eff_else| {
                                 let lub_ty = self.least_upper_bound_or_error(
                                     e,
-                                    vec![typ_then.data().clone(), typ_else.data().clone()],
+                                    vec![typ_then.as_ref().clone(), typ_else.as_ref().clone()],
                                     type_errors,
                                     LubContext::Conditional,
                                 );
                                 let has_lub = lub_ty.is_some();
-                                let annot_expr = ExprBuilder::with_data(lub_ty)
+                                let annot_expr = T::with_data(lub_ty)
                                     .with_same_source_loc(e)
                                     .ite(typ_test, typ_then, typ_else);
                                 if has_lub {
@@ -605,7 +606,7 @@ impl<'a> Typechecker<'a> {
                     |_| None,
                 );
                 ans_left.then_typecheck(|typ_left, eff_left| {
-                    match typ_left.data() {
+                    match typ_left.as_ref() {
                         // First argument is false, so short circuit the `&&` to
                         // false _without_ typechecking the second argument.
                         // Since the type of the `&&` is `false`, it is known to
@@ -634,13 +635,13 @@ impl<'a> Typechecker<'a> {
                                 |_| None,
                             );
                             ans_right.then_typecheck(|typ_right, eff_right| {
-                                match (typ_left.data(), typ_right.data()) {
+                                match (typ_left.as_ref(), typ_right.as_ref()) {
                                     // The second argument is false, so the `&&`
                                     // is false. The effect is empty for the
                                     // same reason as when the first argument
                                     // was false.
                                     (Some(_), Some(Type::False)) => TypecheckAnswer::success(
-                                        ExprBuilder::with_data(Some(Type::False))
+                                        T::with_data(Some(Type::False))
                                             .with_same_source_loc(e)
                                             .and(typ_left, typ_right),
                                     ),
@@ -653,7 +654,7 @@ impl<'a> Typechecker<'a> {
                                     // true for the whole `&&` to be true.
                                     (Some(_), Some(Type::True)) => {
                                         TypecheckAnswer::success_with_effect(
-                                            ExprBuilder::with_data(typ_left.data().clone())
+                                            T::with_data(typ_left.as_ref().clone())
                                                 .with_same_source_loc(e)
                                                 .and(typ_left, typ_right),
                                             eff_left.union(&eff_right),
@@ -661,7 +662,7 @@ impl<'a> Typechecker<'a> {
                                     }
                                     (Some(Type::True), Some(_)) => {
                                         TypecheckAnswer::success_with_effect(
-                                            ExprBuilder::with_data(typ_right.data().clone())
+                                            T::with_data(typ_right.as_ref().clone())
                                                 .with_same_source_loc(e)
                                                 .and(typ_left, typ_right),
                                             eff_right.union(&eff_right),
@@ -671,7 +672,7 @@ impl<'a> Typechecker<'a> {
                                     // Neither argument was true or false, so we only
                                     // know the result type is boolean.
                                     (Some(_), Some(_)) => TypecheckAnswer::success_with_effect(
-                                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                        T::with_data(Some(Type::primitive_boolean()))
                                             .with_same_source_loc(e)
                                             .and(typ_left, typ_right),
                                         eff_left.union(&eff_right),
@@ -680,7 +681,7 @@ impl<'a> Typechecker<'a> {
                                     // One or both of the left and the right failed to
                                     // typecheck, so the `&&` expression also fails.
                                     _ => TypecheckAnswer::fail(
-                                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                        T::with_data(Some(Type::primitive_boolean()))
                                             .with_same_source_loc(e)
                                             .and(typ_left, typ_right),
                                     ),
@@ -702,7 +703,7 @@ impl<'a> Typechecker<'a> {
                     type_errors,
                     |_| None,
                 );
-                ans_left.then_typecheck(|ty_expr_left, eff_left| match ty_expr_left.data() {
+                ans_left.then_typecheck(|ty_expr_left, eff_left| match ty_expr_left.as_ref() {
                     // Contrary to `&&` where short circuiting did not permit
                     // any effect, an effect can be maintained when short
                     // circuiting `||`. We know the left operand is `true`, so
@@ -725,7 +726,7 @@ impl<'a> Typechecker<'a> {
                             |_| None,
                         );
                         ans_right.then_typecheck(|ty_expr_right, eff_right| {
-                            match (ty_expr_left.data(), ty_expr_right.data()) {
+                            match (ty_expr_left.as_ref(), ty_expr_right.as_ref()) {
                                 // Now the right operand is always `true`, so we can
                                 // use its effect as the result effect. The left
                                 // operand might have been `true` of `false`, but it
@@ -733,7 +734,7 @@ impl<'a> Typechecker<'a> {
                                 // right is always `true`.
                                 (Some(_), Some(Type::True)) => {
                                     TypecheckAnswer::success_with_effect(
-                                        ExprBuilder::with_data(Some(Type::True))
+                                        T::with_data(Some(Type::True))
                                             .with_same_source_loc(e)
                                             .or(ty_expr_left, ty_expr_right),
                                         eff_right,
@@ -746,7 +747,7 @@ impl<'a> Typechecker<'a> {
                                 // through to the effect of the `||`.
                                 (Some(typ_left), Some(Type::False)) => {
                                     TypecheckAnswer::success_with_effect(
-                                        ExprBuilder::with_data(Some(typ_left.clone()))
+                                        T::with_data(Some(typ_left.clone()))
                                             .with_same_source_loc(e)
                                             .or(ty_expr_left, ty_expr_right),
                                         eff_left,
@@ -754,7 +755,7 @@ impl<'a> Typechecker<'a> {
                                 }
                                 (Some(Type::False), Some(typ_right)) => {
                                     TypecheckAnswer::success_with_effect(
-                                        ExprBuilder::with_data(Some(typ_right.clone()))
+                                        T::with_data(Some(typ_right.clone()))
                                             .with_same_source_loc(e)
                                             .or(ty_expr_left, ty_expr_right),
                                         eff_right,
@@ -765,13 +766,13 @@ impl<'a> Typechecker<'a> {
                                 // means we can only keep effects in the
                                 // intersection of their effect sets.
                                 (Some(_), Some(_)) => TypecheckAnswer::success_with_effect(
-                                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                    T::with_data(Some(Type::primitive_boolean()))
                                         .with_same_source_loc(e)
                                         .or(ty_expr_left, ty_expr_right),
                                     eff_right.intersect(&eff_left),
                                 ),
                                 _ => TypecheckAnswer::fail(
-                                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                    T::with_data(Some(Type::primitive_boolean()))
                                         .with_same_source_loc(e)
                                         .or(ty_expr_left, ty_expr_right),
                                 ),
@@ -806,11 +807,11 @@ impl<'a> Typechecker<'a> {
                     |_| None,
                 );
 
-                actual.then_typecheck(|typ_expr_actual, _| match typ_expr_actual.data() {
+                actual.then_typecheck(|typ_expr_actual, _| match typ_expr_actual.as_ref() {
                     Some(typ_actual) => {
                         let all_attrs = typ_actual.all_attributes(self.schema);
                         let attr_ty = Type::lookup_attribute_type(self.schema, typ_actual, attr);
-                        let annot_expr = ExprBuilder::with_data(
+                        let annot_expr = T::with_data(
                             attr_ty.clone().map(|attr_ty| attr_ty.attr_type),
                         )
                         .with_same_source_loc(e)
@@ -849,7 +850,7 @@ impl<'a> Typechecker<'a> {
                                 && Type::may_have_attr(self.schema, typ_actual, attr) =>
                             {
                                 TypecheckAnswer::success(
-                                    ExprBuilder::with_data(Some(Type::Never))
+                                    T::with_data(Some(Type::Never))
                                         .with_same_source_loc(e)
                                         .get_attr(typ_expr_actual, attr.clone()),
                                 )
@@ -874,7 +875,7 @@ impl<'a> Typechecker<'a> {
                         }
                     }
                     None => TypecheckAnswer::fail(
-                        ExprBuilder::new()
+                        T::new()
                             .with_same_source_loc(e)
                             .get_attr(typ_expr_actual, attr.clone()),
                     ),
@@ -897,7 +898,7 @@ impl<'a> Typechecker<'a> {
                         _ => None,
                     },
                 );
-                actual.then_typecheck(|typ_expr_actual, _| match typ_expr_actual.data() {
+                actual.then_typecheck(|typ_expr_actual, _| match typ_expr_actual.as_ref() {
                     Some(typ_actual) => {
                         match Type::lookup_attribute_type(self.schema, typ_actual, attr) {
                             Some(AttributeType {
@@ -923,7 +924,7 @@ impl<'a> Typechecker<'a> {
                                     Type::primitive_boolean()
                                 };
                                 TypecheckAnswer::success_with_effect(
-                                    ExprBuilder::with_data(Some(type_of_has))
+                                    T::with_data(Some(type_of_has))
                                         .with_same_source_loc(e)
                                         .has_attr(typ_expr_actual, attr.clone()),
                                     EffectSet::singleton(Effect::new(expr, attr)),
@@ -938,7 +939,7 @@ impl<'a> Typechecker<'a> {
                                 attr_type: _,
                                 is_required: false,
                             }) => TypecheckAnswer::success_with_effect(
-                                ExprBuilder::with_data(Some(
+                                T::with_data(Some(
                                     // The optional attribute `HasAttr` can have
                                     // type `true` if it occurs after the attribute
                                     // access of the expression is already in the
@@ -954,7 +955,7 @@ impl<'a> Typechecker<'a> {
                                 EffectSet::singleton(Effect::new(expr, attr)),
                             ),
                             None => TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(
+                                T::with_data(Some(
                                     if Type::may_have_attr(self.schema, typ_actual, attr) {
                                         // The type might have the attribute, but we
                                         // can not conclude one way or the other.
@@ -977,7 +978,7 @@ impl<'a> Typechecker<'a> {
                         }
                     }
                     None => TypecheckAnswer::fail(
-                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                        T::with_data(Some(Type::primitive_boolean()))
                             .with_same_source_loc(e)
                             .has_attr(typ_expr_actual, attr.clone()),
                     ),
@@ -1003,7 +1004,7 @@ impl<'a> Typechecker<'a> {
                 );
                 actual.then_typecheck(|actual_expr_ty, _| {
                     TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                        T::with_data(Some(Type::primitive_boolean()))
                             .with_same_source_loc(e)
                             // FIXME: `pattern` contains an `Arc<Vec<...>>` that
                             // could be cloned cheap, but this reallocated the
@@ -1023,7 +1024,7 @@ impl<'a> Typechecker<'a> {
                     |_| Some(UnexpectedTypeHelp::TypeTestNotSupported),
                 )
                 .then_typecheck(|expr_ty, _| {
-                    match expr_ty.data() {
+                    match expr_ty.as_ref() {
                         Some(Type::EntityOrRecord(EntityRecordKind::Entity(actual_lub))) => {
                             let type_of_is = if !actual_lub.contains_entity_type(entity_type) {
                                 // The actual EntityLUB does not contain the entity type
@@ -1040,7 +1041,7 @@ impl<'a> Typechecker<'a> {
                             };
 
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(type_of_is))
+                                T::with_data(Some(type_of_is))
                                     .with_same_source_loc(e)
                                     .is_entity_type(expr_ty, entity_type.clone()),
                             )
@@ -1059,7 +1060,7 @@ impl<'a> Typechecker<'a> {
                             };
 
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(type_of_is))
+                                T::with_data(Some(type_of_is))
                                     .with_same_source_loc(e)
                                     .is_entity_type(expr_ty, entity_type.clone()),
                             )
@@ -1068,7 +1069,7 @@ impl<'a> Typechecker<'a> {
                         // entity type it could be, so we just return `Bool`.
                         Some(Type::EntityOrRecord(EntityRecordKind::AnyEntity { .. })) => {
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                T::with_data(Some(Type::primitive_boolean()))
                                     .with_same_source_loc(e)
                                     .is_entity_type(expr_ty, entity_type.clone()),
                             )
@@ -1076,7 +1077,7 @@ impl<'a> Typechecker<'a> {
                         // Expression type is not an entity type or is `None`.
                         // In either case a type error was already reported.
                         _ => TypecheckAnswer::fail(
-                            ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                            T::with_data(Some(Type::primitive_boolean()))
                                 .with_same_source_loc(e)
                                 .is_entity_type(expr_ty, entity_type.clone()),
                         ),
@@ -1098,11 +1099,11 @@ impl<'a> Typechecker<'a> {
                 // returned. It will also return TypecheckFail if any of the
                 // individual element failed to typecheck (were TypecheckFail).
                 TypecheckAnswer::sequence_all_then_typecheck(elem_types, |elem_types_and_effects| {
-                    let (elem_expr_types, _): (Vec<Expr<Option<Type>>>, Vec<_>) =
+                    let (elem_expr_types, _): (Vec<U>, Vec<_>) =
                         elem_types_and_effects.into_iter().unzip();
                     let elem_lub = self.least_upper_bound_or_error(
                         e,
-                        elem_expr_types.iter().map(|ety| ety.data().clone()),
+                        elem_expr_types.iter().map(|ety| ety.as_ref().clone()),
                         type_errors,
                         LubContext::Set,
                     );
@@ -1113,18 +1114,18 @@ impl<'a> Typechecker<'a> {
                                 self.policy_id.clone(),
                             ));
                             TypecheckAnswer::fail(
-                                ExprBuilder::new()
+                                T::new()
                                     .with_same_source_loc(e)
                                     .set(elem_expr_types),
                             )
                         }
                         Some(elem_lub) => TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::set(elem_lub)))
+                            T::with_data(Some(Type::set(elem_lub)))
                                 .with_same_source_loc(e)
                                 .set(elem_expr_types),
                         ),
                         None => TypecheckAnswer::fail(
-                            ExprBuilder::new()
+                            T::new()
                                 .with_same_source_loc(e)
                                 .set(elem_expr_types),
                         ),
@@ -1144,7 +1145,7 @@ impl<'a> Typechecker<'a> {
                 TypecheckAnswer::sequence_all_then_typecheck(
                     record_attr_tys,
                     |record_attr_tys_and_effects| {
-                        let (record_attr_expr_tys, _): (Vec<Expr<Option<Type>>>, Vec<_>) =
+                        let (record_attr_expr_tys, _): (Vec<U>, Vec<_>) =
                             record_attr_tys_and_effects.into_iter().unzip();
                         // If any of the attributes could not be assigned a type
                         // (recall that a expression can fail to typecheck but still
@@ -1152,7 +1153,7 @@ impl<'a> Typechecker<'a> {
                         // this expression.
                         let record_attr_tys = record_attr_expr_tys
                             .iter()
-                            .map(|e| e.data().clone())
+                            .map(|e| e.as_ref().clone())
                             .collect::<Option<Vec<_>>>();
                         let ty = record_attr_tys.map(|record_attr_tys| {
                             // Given the attribute types which we know know
@@ -1168,7 +1169,7 @@ impl<'a> Typechecker<'a> {
                         let is_success = ty.is_some();
                         // PANIC SAFETY: can't have duplicate keys because the keys are the same as those in `map` which was already a BTreeMap
                         #[allow(clippy::expect_used)]
-                        let expr = ExprBuilder::with_data(ty)
+                        let expr = T::with_data(ty)
                             .with_same_source_loc(e)
                             .record(map.keys().cloned().zip(record_attr_expr_tys))
                             .expect("this can't have duplicate keys because the keys are the same as those in `map` which was already a BTreeMap");
@@ -1186,13 +1187,13 @@ impl<'a> Typechecker<'a> {
     /// A utility called by the main typecheck method to handle binary operator
     /// application.
     /// INVARIANT: `bin_expr` must be a `BinaryApp`
-    fn typecheck_binary<'b>(
+    fn typecheck_binary<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
         bin_expr: &'b Expr,
         type_errors: &mut Vec<ValidationError>,
-    ) -> TypecheckAnswer<'b> {
+    ) -> TypecheckAnswer<'b, U> {
         // PANIC SAFETY: maintained by invariant on this function
         #[allow(clippy::panic)]
         let ExprKind::BinaryApp { op, arg1, arg2 } = bin_expr.expr_kind() else {
@@ -1210,26 +1211,26 @@ impl<'a> Typechecker<'a> {
                         let type_of_eq = self.type_of_equality(
                             request_env,
                             arg1,
-                            lhs_ty.data(),
+                            lhs_ty.as_ref(),
                             arg2,
-                            rhs_ty.data(),
+                            rhs_ty.as_ref(),
                         );
 
                         if self.mode.is_strict() {
-                            let annotated_eq = ExprBuilder::with_data(Some(type_of_eq))
+                            let annotated_eq = T::with_data(Some(type_of_eq))
                                 .with_same_source_loc(bin_expr)
                                 .binary_app(*op, lhs_ty.clone(), rhs_ty.clone());
                             self.enforce_strict_equality(
                                 bin_expr,
                                 annotated_eq,
-                                lhs_ty.data(),
-                                rhs_ty.data(),
+                                lhs_ty.as_ref(),
+                                rhs_ty.as_ref(),
                                 type_errors,
                                 LubContext::Equality,
                             )
                         } else {
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(type_of_eq))
+                                T::with_data(Some(type_of_eq))
                                     .with_same_source_loc(bin_expr)
                                     .binary_app(*op, lhs_ty, rhs_ty),
                             )
@@ -1258,7 +1259,7 @@ impl<'a> Typechecker<'a> {
                     );
                     ans_arg2.then_typecheck(|expr_ty_arg2, _| {
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                            T::with_data(Some(Type::primitive_boolean()))
                                 .with_same_source_loc(bin_expr)
                                 .binary_app(*op, expr_ty_arg1, expr_ty_arg2),
                         )
@@ -1296,7 +1297,7 @@ impl<'a> Typechecker<'a> {
                     );
                     ans_arg2.then_typecheck(|expr_ty_arg2, _| {
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::primitive_long()))
+                            T::with_data(Some(Type::primitive_long()))
                                 .with_same_source_loc(bin_expr)
                                 .binary_app(*op, expr_ty_arg1, expr_ty_arg2),
                         )
@@ -1337,7 +1338,7 @@ impl<'a> Typechecker<'a> {
                         .then_typecheck(|expr_ty_arg2, _| {
                             if self.mode.is_strict() {
                                 let annotated_expr =
-                                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                    T::with_data(Some(Type::primitive_boolean()))
                                         .with_same_source_loc(bin_expr)
                                         .binary_app(
                                             *op,
@@ -1347,19 +1348,19 @@ impl<'a> Typechecker<'a> {
                                 self.enforce_strict_equality(
                                     bin_expr,
                                     annotated_expr,
-                                    &match expr_ty_arg1.data() {
+                                    &match expr_ty_arg1.as_ref() {
                                         Some(Type::Set {
                                             element_type: Some(ty),
                                         }) => Some(*ty.clone()),
                                         _ => None,
                                     },
-                                    expr_ty_arg2.data(),
+                                    expr_ty_arg2.as_ref(),
                                     type_errors,
                                     LubContext::Contains,
                                 )
                             } else {
                                 TypecheckAnswer::success(
-                                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                    T::with_data(Some(Type::primitive_boolean()))
                                         .with_same_source_loc(bin_expr)
                                         .binary_app(*op, expr_ty_arg1, expr_ty_arg2),
                                 )
@@ -1403,20 +1404,20 @@ impl<'a> Typechecker<'a> {
                     .then_typecheck(|expr_ty_arg2, _| {
                         if self.mode.is_strict() {
                             let annotated_expr =
-                                ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                T::with_data(Some(Type::primitive_boolean()))
                                     .with_same_source_loc(bin_expr)
                                     .binary_app(*op, expr_ty_arg1.clone(), expr_ty_arg2.clone());
                             self.enforce_strict_equality(
                                 bin_expr,
                                 annotated_expr,
-                                expr_ty_arg1.data(),
-                                expr_ty_arg2.data(),
+                                expr_ty_arg1.as_ref(),
+                                expr_ty_arg2.as_ref(),
                                 type_errors,
                                 LubContext::ContainsAnyAll,
                             )
                         } else {
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                                T::with_data(Some(Type::primitive_boolean()))
                                     .with_same_source_loc(bin_expr)
                                     .binary_app(*op, expr_ty_arg1, expr_ty_arg2),
                             )
@@ -1427,21 +1428,21 @@ impl<'a> Typechecker<'a> {
         }
     }
 
-    fn enforce_strict_equality<'b>(
+    fn enforce_strict_equality<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         unannotated_expr: &'b Expr,
-        annotated_expr: Expr<Option<Type>>,
+        annotated_expr: U,
         lhs_ty: &Option<Type>,
         rhs_ty: &Option<Type>,
         type_errors: &mut Vec<ValidationError>,
         context: LubContext,
-    ) -> TypecheckAnswer<'b> {
-        match annotated_expr.data() {
+    ) -> TypecheckAnswer<'b, U> {
+        match annotated_expr.as_ref() {
             Some(Type::False) => {
-                TypecheckAnswer::success(ExprBuilder::with_data(Some(Type::False)).val(false))
+                TypecheckAnswer::success(T::with_data(Some(Type::False)).val(false))
             }
             Some(Type::True) => {
-                TypecheckAnswer::success(ExprBuilder::with_data(Some(Type::True)).val(true))
+                TypecheckAnswer::success(T::with_data(Some(Type::True)).val(true))
             }
             _ => match (lhs_ty, rhs_ty) {
                 (Some(lhs_ty), Some(rhs_ty)) => {
@@ -1530,7 +1531,7 @@ impl<'a> Typechecker<'a> {
     /// consisting of variables and literals can ever be true. When we find that
     /// an `in` expression is always false, this function returns the singleton
     /// type false, allowing for short circuiting in `if` and `and` expressions.
-    fn typecheck_in<'b>(
+    fn typecheck_in<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
@@ -1538,7 +1539,7 @@ impl<'a> Typechecker<'a> {
         lhs: &'b Expr,
         rhs: &'b Expr,
         type_errors: &mut Vec<ValidationError>,
-    ) -> TypecheckAnswer<'b> {
+    ) -> TypecheckAnswer<'b, U> {
         // First, the basic typechecking rules for `in` that apply regardless of
         // the syntactic special cases that follow.
         let ty_lhs = self.expect_type(
@@ -1576,13 +1577,13 @@ impl<'a> Typechecker<'a> {
                 // typecheck.
                 if !lhs_typechecked || !rhs_typechecked {
                     return TypecheckAnswer::fail(
-                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                        T::with_data(Some(Type::primitive_boolean()))
                             .with_same_source_loc(in_expr)
                             .is_in(lhs_expr, rhs_expr),
                     );
                 }
                 let left_is_unspecified = Typechecker::is_unspecified_entity(request_env, lhs);
-                let right_is_specified = match rhs_expr.data() {
+                let right_is_specified = match rhs_expr.as_ref() {
                     Some(Type::Set { element_type }) => element_type.as_ref().map(|t| t.as_ref()),
                     ty => ty.as_ref(),
                 }
@@ -1590,13 +1591,13 @@ impl<'a> Typechecker<'a> {
                 .unwrap_or(false);
                 if left_is_unspecified && right_is_specified {
                     return TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(Type::singleton_boolean(false)))
+                        T::with_data(Some(Type::singleton_boolean(false)))
                             .with_same_source_loc(in_expr)
                             .is_in(lhs_expr, rhs_expr),
                     );
                 }
-                let lhs_ty = lhs_expr.data().clone();
-                let rhs_ty = rhs_expr.data().clone();
+                let lhs_ty = lhs_expr.as_ref().clone();
+                let rhs_ty = rhs_expr.as_ref().clone();
                 let lhs_as_euid_lit = Typechecker::replace_action_var_with_euid(request_env, lhs);
                 let rhs_as_euid_lit = Typechecker::replace_action_var_with_euid(request_env, rhs);
                 match (lhs_as_euid_lit.expr_kind(), rhs_as_euid_lit.expr_kind()) {
@@ -1667,7 +1668,7 @@ impl<'a> Typechecker<'a> {
                     // the schema and does not have an entity type defined
                     // in the schema.
                     _ => TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                        T::with_data(Some(Type::primitive_boolean()))
                             .with_same_source_loc(in_expr)
                             .is_in(lhs_expr, rhs_expr),
                     ),
@@ -1675,12 +1676,12 @@ impl<'a> Typechecker<'a> {
                 .then_typecheck(|type_of_in, _| {
                     if !self.mode.is_strict() {
                         TypecheckAnswer::success(type_of_in)
-                    } else if matches!(type_of_in.data(), Some(Type::False)) {
+                    } else if matches!(type_of_in.as_ref(), Some(Type::False)) {
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::False)).val(false),
+                            T::with_data(Some(Type::False)).val(false),
                         )
-                    } else if matches!(type_of_in.data(), Some(Type::True)) {
-                        TypecheckAnswer::success(ExprBuilder::with_data(Some(Type::True)).val(true))
+                    } else if matches!(type_of_in.as_ref(), Some(Type::True)) {
+                        TypecheckAnswer::success(T::with_data(Some(Type::True)).val(true))
                     } else {
                         match (lhs_ty, rhs_ty) {
                             (Some(lhs_ty), Some(rhs_ty)) => {
@@ -1799,15 +1800,15 @@ impl<'a> Typechecker<'a> {
 
     /// Handles `in` expression where the `principal` or `resource` is `in` an
     /// entity literal or set of entity literals.
-    fn type_of_var_in_entity_literals<'b, 'c>(
+    fn type_of_var_in_entity_literals<'b, 'c, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         lhs_var: Var,
         rhs_elems: impl IntoIterator<Item = &'b Expr>,
         in_expr: &Expr,
-        lhs_expr: Expr<Option<Type>>,
-        rhs_expr: Expr<Option<Type>>,
-    ) -> TypecheckAnswer<'c> {
+        lhs_expr: U,
+        rhs_expr: U,
+    ) -> TypecheckAnswer<'c, U> {
         if let Some(rhs) = Typechecker::euids_from_euid_literals_or_action(request_env, rhs_elems) {
             let var_etype = if matches!(lhs_var, Var::Principal) {
                 request_env.principal_entity_type()
@@ -1820,7 +1821,7 @@ impl<'a> Typechecker<'a> {
                     // we are typechecking a request for some action which isn't
                     // declared in the schema.  We don't know if the euid would be
                     // in the descendants or not, so give it type boolean.
-                    let in_expr = ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                    let in_expr = T::with_data(Some(Type::primitive_boolean()))
                         .with_same_source_loc(in_expr)
                         .is_in(lhs_expr, rhs_expr);
                     if self.mode.is_partial() {
@@ -1847,7 +1848,7 @@ impl<'a> Typechecker<'a> {
                         )
                     } else {
                         let annotated_expr =
-                            ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                            T::with_data(Some(Type::primitive_boolean()))
                                 .with_same_source_loc(in_expr)
                                 .is_in(lhs_expr, rhs_expr);
                         if self.mode.is_partial() {
@@ -1868,14 +1869,14 @@ impl<'a> Typechecker<'a> {
                         // something on the RHS is unspecified, so we have to type `unspecified in RHS` as Bool,
                         // because two unspecified entities are equal (and thus `in`) if they have the same `Eid`.
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                            T::with_data(Some(Type::primitive_boolean()))
                                 .with_same_source_loc(in_expr)
                                 .is_in(lhs_expr, rhs_expr),
                         )
                     } else {
                         // nothing on the RHS is unspecified, so `unspecified in RHS` is always false
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::singleton_boolean(false)))
+                            T::with_data(Some(Type::singleton_boolean(false)))
                                 .with_same_source_loc(in_expr)
                                 .is_in(lhs_expr, rhs_expr),
                         )
@@ -1891,22 +1892,22 @@ impl<'a> Typechecker<'a> {
             // but in that case, we return `False` before ever reaching this
             // function, due to earlier checks.
             TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                T::with_data(Some(Type::primitive_boolean()))
                     .with_same_source_loc(in_expr)
                     .is_in(lhs_expr, rhs_expr),
             )
         }
     }
 
-    fn type_of_entity_literal_in_entity_literals<'b, 'c>(
+    fn type_of_entity_literal_in_entity_literals<'b, 'c, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         lhs_euid: &EntityUID,
         rhs_elems: impl IntoIterator<Item = &'b Expr>,
         in_expr: &Expr,
-        lhs_expr: Expr<Option<Type>>,
-        rhs_expr: Expr<Option<Type>>,
-    ) -> TypecheckAnswer<'c> {
+        lhs_expr: U,
+        rhs_expr: U,
+    ) -> TypecheckAnswer<'c, U> {
         if let Some(rhs) = Typechecker::euids_from_euid_literals_or_action(request_env, rhs_elems) {
             match lhs_euid.entity_type() {
                 EntityType::Specified(name) => {
@@ -1943,7 +1944,7 @@ impl<'a> Typechecker<'a> {
                         // other entity type can ever be a member of `Action`,
                         // and by extension any particular action entity.
                         TypecheckAnswer::success(
-                            ExprBuilder::with_data(Some(Type::False))
+                            T::with_data(Some(Type::False))
                                 .with_same_source_loc(in_expr)
                                 .is_in(lhs_expr, rhs_expr),
                         )
@@ -1955,7 +1956,7 @@ impl<'a> Typechecker<'a> {
                 // different part of the validator, so all we need to do here is
                 // return `TypecheckFail`.
                 EntityType::Unspecified => TypecheckAnswer::fail(
-                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                    T::with_data(Some(Type::primitive_boolean()))
                         .with_same_source_loc(in_expr)
                         .is_in(lhs_expr, rhs_expr),
                 ),
@@ -1965,7 +1966,7 @@ impl<'a> Typechecker<'a> {
             // literal, so this does not apply. The `in` is still valid, so
             // typechecking succeeds with type Boolean.
             TypecheckAnswer::success(
-                ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                T::with_data(Some(Type::primitive_boolean()))
                     .with_same_source_loc(in_expr)
                     .is_in(lhs_expr, rhs_expr),
             )
@@ -1976,19 +1977,19 @@ impl<'a> Typechecker<'a> {
     // set of EUID literals. We can look up all ancestors of the action in the
     // schema, so the type will be `False` if the none of the rhs actions are an
     // ancestor of the lhs.
-    fn type_of_action_in_actions<'b>(
+    fn type_of_action_in_actions<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         lhs: &EntityUID,
         rhs: impl IntoIterator<Item = &'a EntityUID> + 'a,
         in_expr: &Expr,
-        lhs_expr: Expr<Option<Type>>,
-        rhs_expr: Expr<Option<Type>>,
-    ) -> TypecheckAnswer<'b> {
+        lhs_expr: U,
+        rhs_expr: U,
+    ) -> TypecheckAnswer<'b, U> {
         let rhs_descendants = self.schema.get_actions_in_set(rhs);
         if let Some(rhs_descendants) = rhs_descendants {
             Typechecker::entity_in_descendants(lhs, rhs_descendants, in_expr, lhs_expr, rhs_expr)
         } else {
-            let annotated_expr = ExprBuilder::with_data(Some(Type::primitive_boolean()))
+            let annotated_expr = T::with_data(Some(Type::primitive_boolean()))
                 .with_same_source_loc(in_expr)
                 .is_in(lhs_expr, rhs_expr);
             if self.mode.is_partial() {
@@ -2004,14 +2005,14 @@ impl<'a> Typechecker<'a> {
     // based on the precise EUIDs when they're not actions, so we only look at
     // entity types. The type will be `False` is none of the entities on the rhs
     // have a type which may be an ancestor of the rhs entity type.
-    fn type_of_non_action_in_entities<'b>(
+    fn type_of_non_action_in_entities<'b, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         lhs: &EntityUID,
         rhs: &[EntityUID],
         in_expr: &Expr,
-        lhs_expr: Expr<Option<Type>>,
-        rhs_expr: Expr<Option<Type>>,
-    ) -> TypecheckAnswer<'b> {
+        lhs_expr: U,
+        rhs_expr: U,
+    ) -> TypecheckAnswer<'b, U> {
         match lhs.entity_type() {
             EntityType::Specified(lhs_ety) => {
                 let all_rhs_known = rhs
@@ -2027,7 +2028,7 @@ impl<'a> Typechecker<'a> {
                         rhs_expr,
                     )
                 } else {
-                    let annotated_expr = ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                    let annotated_expr = T::with_data(Some(Type::primitive_boolean()))
                         .with_same_source_loc(in_expr)
                         .is_in(lhs_expr, rhs_expr);
                     if self.mode.is_partial() {
@@ -2041,7 +2042,7 @@ impl<'a> Typechecker<'a> {
                 // Unspecified entities will be detected by a different part of the validator.
                 // Still return `TypecheckFail` so that typechecking is not considered successful.
                 TypecheckAnswer::fail(
-                    ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                    T::with_data(Some(Type::primitive_boolean()))
                         .with_same_source_loc(in_expr)
                         .is_in(lhs_expr, rhs_expr),
                 )
@@ -2051,19 +2052,19 @@ impl<'a> Typechecker<'a> {
 
     /// Check if the entity is in the list of descendants. Return the singleton
     /// type false if it is not, and boolean otherwise.
-    fn entity_in_descendants<'b, K>(
+    fn entity_in_descendants<'b, K, T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         lhs_entity: &K,
         rhs_descendants: impl IntoIterator<Item = &'a K>,
         in_expr: &Expr,
-        lhs_expr: Expr<Option<Type>>,
-        rhs_expr: Expr<Option<Type>>,
-    ) -> TypecheckAnswer<'b>
+        lhs_expr: U,
+        rhs_expr: U,
+    ) -> TypecheckAnswer<'b, U>
     where
         K: PartialEq + 'a,
     {
         let is_var_in_descendants = rhs_descendants.into_iter().any(|e| e == lhs_entity);
         TypecheckAnswer::success(
-            ExprBuilder::with_data(Some(if is_var_in_descendants {
+            T::with_data(Some(if is_var_in_descendants {
                 Type::primitive_boolean()
             } else {
                 Type::singleton_boolean(false)
@@ -2076,13 +2077,13 @@ impl<'a> Typechecker<'a> {
     /// A utility called by the main typecheck method to handle unary operator
     /// application.
     /// INVARIANT: `unary_expr` must be of kind `UnaryApp`
-    fn typecheck_unary<'b>(
+    fn typecheck_unary<'b,T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
         unary_expr: &'b Expr,
         type_errors: &mut Vec<ValidationError>,
-    ) -> TypecheckAnswer<'b> {
+    ) -> TypecheckAnswer<'b, U> {
         // PANIC SAFETY maintained by invariant on this function
         #[allow(clippy::panic)]
         let ExprKind::UnaryApp { op, arg } = unary_expr.expr_kind() else {
@@ -2098,24 +2099,24 @@ impl<'a> Typechecker<'a> {
                     type_errors,
                     |_| None,
                 );
-                ans_arg.then_typecheck(|typ_expr_arg, _| match typ_expr_arg.data() {
+                ans_arg.then_typecheck(|typ_expr_arg, _| match typ_expr_arg.as_ref() {
                     Some(typ_arg) => {
                         TypecheckAnswer::success(if typ_arg == &Type::singleton_boolean(true) {
-                            ExprBuilder::with_data(Some(Type::singleton_boolean(false)))
+                            T::with_data(Some(Type::singleton_boolean(false)))
                                 .with_same_source_loc(unary_expr)
                                 .not(typ_expr_arg)
                         } else if typ_arg == &Type::singleton_boolean(false) {
-                            ExprBuilder::with_data(Some(Type::singleton_boolean(true)))
+                            T::with_data(Some(Type::singleton_boolean(true)))
                                 .with_same_source_loc(unary_expr)
                                 .not(typ_expr_arg)
                         } else {
-                            ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                            T::with_data(Some(Type::primitive_boolean()))
                                 .with_same_source_loc(unary_expr)
                                 .not(typ_expr_arg)
                         })
                     }
                     None => TypecheckAnswer::fail(
-                        ExprBuilder::with_data(Some(Type::primitive_boolean()))
+                        T::with_data(Some(Type::primitive_boolean()))
                             .with_same_source_loc(unary_expr)
                             .not(typ_expr_arg),
                     ),
@@ -2132,7 +2133,7 @@ impl<'a> Typechecker<'a> {
                 );
                 ans_arg.then_typecheck(|typ_expr_arg, _| {
                     TypecheckAnswer::success(
-                        ExprBuilder::with_data(Some(Type::primitive_long()))
+                        T::with_data(Some(Type::primitive_long()))
                             .with_same_source_loc(unary_expr)
                             .neg(typ_expr_arg),
                     )
@@ -2144,7 +2145,7 @@ impl<'a> Typechecker<'a> {
     /// Check that an expression has a type that is a subtype of one of the
     /// given types. If not, generate a type error and return TypecheckFail.
     /// Return the TypecheckSuccess with the type otherwise.
-    fn expect_one_of_types<'b, F>(
+    fn expect_one_of_types<'b, F,T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
@@ -2152,12 +2153,12 @@ impl<'a> Typechecker<'a> {
         expected: &[Type],
         type_errors: &mut Vec<ValidationError>,
         type_error_help: F,
-    ) -> TypecheckAnswer<'b>
+    ) -> TypecheckAnswer<'b, U>
     where
         F: FnOnce(&Type) -> Option<UnexpectedTypeHelp>,
     {
         let actual = self.typecheck(request_env, prior_eff, expr, type_errors);
-        actual.then_typecheck(|mut typ_actual, eff_actual| match typ_actual.data() {
+        actual.then_typecheck(|mut typ_actual: U, eff_actual| match typ_actual.as_ref() {
             Some(actual_ty) => {
                 if !expected.iter().any(|expected_ty| {
                     // This check uses `ValidationMode::Permissive` even in
@@ -2204,7 +2205,7 @@ impl<'a> Typechecker<'a> {
     /// Check that an expression has a type that is a subtype of a given type.
     /// If not, generate a type error and return None. Otherwise, return the
     /// type.
-    fn expect_type<'b, F>(
+    fn expect_type<'b, F,T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
@@ -2212,7 +2213,7 @@ impl<'a> Typechecker<'a> {
         expected: Type,
         type_errors: &mut Vec<ValidationError>,
         type_error_help: F,
-    ) -> TypecheckAnswer<'b>
+    ) -> TypecheckAnswer<'b, U>
     where
         F: FnOnce(&Type) -> Option<UnexpectedTypeHelp>,
     {
@@ -2318,13 +2319,13 @@ impl<'a> Typechecker<'a> {
     /// Utility called by the main typecheck method to handle extension function
     /// application.
     /// INVARIANT `ext_expr` must be a `ExtensionFunctionApp`
-    fn typecheck_extension<'b>(
+    fn typecheck_extension<'b,T: ExprTypeBuilder<U>, U: AsRef<Option<Type>>>(
         &self,
         request_env: &RequestEnv,
         prior_eff: &EffectSet<'b>,
         ext_expr: &'b Expr,
         type_errors: &mut Vec<ValidationError>,
-    ) -> TypecheckAnswer<'b> {
+    ) -> TypecheckAnswer<'b, U> {
         // PANIC SAFETY maintained by invariant on this function
         #[allow(clippy::panic)]
         let ExprKind::ExtensionFunctionApp { fn_name, args } = ext_expr.expr_kind() else {
@@ -2379,7 +2380,7 @@ impl<'a> Typechecker<'a> {
                 if failed {
                     match typed_arg_exprs(type_errors) {
                         Some(exprs) => TypecheckAnswer::fail(
-                            ExprBuilder::with_data(Some(ret_ty.clone()))
+                            T::with_data(Some(ret_ty.clone()))
                                 .with_same_source_loc(ext_expr)
                                 .call_extension_fn(fn_name.clone(), exprs),
                         ),
@@ -2399,10 +2400,10 @@ impl<'a> Typechecker<'a> {
                     TypecheckAnswer::sequence_all_then_typecheck(
                         typechecked_args,
                         |arg_exprs_effects| {
-                            let (typed_arg_exprs, _): (Vec<Expr<Option<Type>>>, Vec<_>) =
+                            let (typed_arg_exprs, _): (Vec<U>, Vec<_>) =
                                 arg_exprs_effects.into_iter().unzip();
                             TypecheckAnswer::success(
-                                ExprBuilder::with_data(Some(ret_ty.clone()))
+                                T::with_data(Some(ret_ty.clone()))
                                     .with_same_source_loc(ext_expr)
                                     .call_extension_fn(fn_name.clone(), typed_arg_exprs),
                             )
@@ -2414,7 +2415,7 @@ impl<'a> Typechecker<'a> {
                 type_errors.push(typ_err(ext_expr.clone()));
                 match typed_arg_exprs(type_errors) {
                     Some(typed_args) => TypecheckAnswer::fail(
-                        ExprBuilder::with_data(None)
+                        T::with_data(None)
                             .with_same_source_loc(ext_expr)
                             .call_extension_fn(fn_name.clone(), typed_args),
                     ),

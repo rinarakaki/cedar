@@ -64,11 +64,11 @@ impl Type {
 impl Typechecker<'_> {
     /// Typecheck an expression outside the context of a policy. This is
     /// currently only used for testing.
-    pub(crate) fn typecheck_expr<'a>(
+    pub(crate) fn typecheck_expr<'a, T>(
         &self,
         e: &'a Expr,
         unique_type_errors: &mut HashSet<ValidationError>,
-    ) -> TypecheckAnswer<'a> {
+    ) -> TypecheckAnswer<'a, T> {
         // Using bogus entity type names here for testing. They'll be treated as
         // having empty attribute records, so tests will behave as expected.
         let request_env = RequestEnv::DeclaredAction {

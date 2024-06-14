@@ -605,6 +605,12 @@ impl Expr {
     }
 }
 
+impl<T> AsRef<T> for Expr<T> {
+    fn as_ref(&self) -> &T {
+        &self.data
+    }
+}
+
 /// A trait for customizing the error behavior of substitution
 trait SubstitutionFunction {
     /// The potential errors this substitution function can return
