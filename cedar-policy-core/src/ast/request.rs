@@ -27,8 +27,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::{
-    BorrowedRestrictedExpr, EntityUID, Expr, ExprKind, ExpressionConstructionError, PartialValue,
-    PartialValueSerializedAsExpr, RestrictedExpr, Unknown, Value, ValueKind, Var,
+    BorrowedRestrictedExpr, Eid, EntityUID, Expr, ExprKind, ExpressionConstructionError,
+    PartialValue, PartialValueSerializedAsExpr, RestrictedExpr, Unknown, Value, ValueKind, Var,
 };
 
 /// Represents the request tuple <P, A, R, C> (see the Cedar design doc).
@@ -95,6 +95,13 @@ impl EntityUIDEntry {
         match self {
             Self::Known { euid, .. } => Some(euid),
             Self::Unknown { .. } => None,
+        }
+    }
+
+    pub(crate) fn make_dummy_unspecified_entity() -> Self {
+        Self::Known {
+            euid: Arc::new(EntityUID::unspecified_from_eid(Eid::new(""))),
+            loc: None,
         }
     }
 }

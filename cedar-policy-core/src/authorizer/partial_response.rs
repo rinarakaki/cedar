@@ -32,7 +32,7 @@ use crate::{
 };
 
 lazy_static::lazy_static! {
-    static ref DUMMY_REQUEST: Request = Request::new_unchecked(EntityUIDEntry::Unknown { loc: None }, EntityUIDEntry::Unknown { loc: None }, EntityUIDEntry::Unknown { loc: None }, Some(Context::empty()));
+    static ref DUMMY_REQUEST: Request = Request::new_unchecked(EntityUIDEntry::make_dummy_unspecified_entity(), EntityUIDEntry::make_dummy_unspecified_entity(), EntityUIDEntry::make_dummy_unspecified_entity(), Some(Context::empty()));
 }
 
 type PolicyComponents<'a> = (Effect, &'a PolicyID, &'a Arc<Expr>, &'a Arc<Annotations>);
