@@ -1115,6 +1115,43 @@ impl Node<Option<cst::Member>> {
             _ => None,
         }
     }
+    fn build_expr_access<'a>(
+        &self,
+        head: &mut ast::Expr,
+        next: &mut AstAccessor,
+        tail: &'a mut [AstAccessor],
+    ) -> Result<(ast::Expr, &'a mut [AstAccessor])> {
+        use AstAccessor::*;
+        match (next, tail) {
+            // arbitrary call - error
+            (Call(_), _) => Err(self.to_ast_err(ToASTErrorKind::ExpressionCall).into()),
+
+            // method call on arbitrary expression
+            (Field(i), [Call(a), rest @ ..]) => {
+                // move the expr and args out of the slice
+                let args = std::mem::take(a);
+                let expr = mem::replace(head, ast::Expr::val(false));
+                // move the id out of the slice as well, to avoid cloning the internal string
+                let id = mem::replace(i, ast::Id::new_unchecked(""));
+                Ok((id.to_meth(expr, args, &self.loc)?, rest))
+            }
+            // field of arbitrary expr
+            (Field(i), rest) => {
+                let expr = mem::replace(head, ast::Expr::val(false));
+                let id = mem::replace(i, ast::Id::new_unchecked(""));
+                Ok((
+                    construct_expr_attr(expr, id.into_smolstr(), self.loc.clone()),
+                    rest,
+                ))
+            }
+            // index into arbitrary expr
+            (Index(i), rest) => {
+                let expr = mem::replace(head, ast::Expr::val(false));
+                let s = mem::take(i);
+                Ok((construct_expr_attr(expr, s, self.loc.clone()), rest))
+            }
+        }
+    }
 
     fn to_expr_or_special(&self) -> Result<ExprOrSpecial<'_>> {
         let mem = self.try_as_inner()?;
@@ -1123,24 +1160,24 @@ impl Node<Option<cst::Member>> {
         let maybe_accessors = ParseErrors::transpose(mem.access.iter().map(|a| a.to_access()));
 
         // Return errors in case parsing failed for any element
-        let (prim, mut accessors) = flatten_tuple_2(maybe_prim, maybe_accessors)?;
+        let (mut prim, mut accessors) = flatten_tuple_2(maybe_prim, maybe_accessors)?;
 
-        // `head` will store the current translated expression
-        let mut head = prim;
-        // `tail` will store what remains to be translated
-        let mut tail = &mut accessors[..];
-
-        // This algorithm is essentially an iterator over the accessor slice, but the
-        // pattern match should be easier to read, since we have to check multiple elements
-        // at once. We use `mem::replace` to "deconstruct" the slice as we go, filling it
-        // with empty data and taking ownership of its contents.
-        // The loop returns on the first error observed.
-        loop {
+        let (mut head, mut tail) = {
             use AstAccessor::*;
             use ExprOrSpecial::*;
-            match (&mut head, tail) {
-                // no accessors left - we're done
-                (_, []) => break Ok(head),
+            match (&mut prim, accessors.as_mut_slice()) {
+                // no accessors, return head imeditalty.
+                (_, []) => {
+                    return Ok(prim);
+                }
+
+                // Any access on an arbitrary expression. We will handle the
+                // possibility of multiple accesses on an expression in the loop
+                // at the end of this function.
+                (Expr { expr, .. }, [next, rest @ ..]) => {
+                    self.build_expr_access(expr, next, rest)?
+                }
+
                 // function call
                 (Name { name, .. }, [Call(a), rest @ ..]) => {
                     // move the vec out of the slice, we won't use the slice after
@@ -1150,25 +1187,21 @@ impl Node<Option<cst::Member>> {
                         name,
                         ast::Name::unqualified_name(ast::Id::new_unchecked("")),
                     );
-                    head = nn.into_func(args, self.loc.clone()).map(|expr| Expr {
-                        expr,
-                        loc: self.loc.clone(),
-                    })?;
-                    tail = rest;
+                    (nn.into_func(args, self.loc.clone())?, rest)
                 }
                 // variable call - error
                 (Var { var, .. }, [Call(_), ..]) => {
-                    break Err(self.to_ast_err(ToASTErrorKind::VariableCall(*var)).into())
+                    return Err(self.to_ast_err(ToASTErrorKind::VariableCall(*var)).into());
                 }
-                // arbitrary call - error
-                (_, [Call(_), ..]) => {
-                    break Err(self.to_ast_err(ToASTErrorKind::ExpressionCall).into())
+                // string call - error
+                (StrLit { .. }, [Call(_), ..]) => {
+                    return Err(self.to_ast_err(ToASTErrorKind::ExpressionCall).into());
                 }
                 // method call on name - error
                 (Name { name, .. }, [Field(f), Call(_), ..]) => {
-                    break Err(self
+                    return Err(self
                         .to_ast_err(ToASTErrorKind::NoMethods(name.clone(), f.clone()))
-                        .into())
+                        .into());
                 }
                 // method call on variable
                 (Var { var, loc: var_loc }, [Field(i), Call(a), rest @ ..]) => {
@@ -1177,26 +1210,10 @@ impl Node<Option<cst::Member>> {
                     let args = std::mem::take(a);
                     // move the id out of the slice as well, to avoid cloning the internal string
                     let id = mem::replace(i, ast::Id::new_unchecked(""));
-                    head = id
-                        .to_meth(construct_expr_var(var, var_loc.clone()), args, &self.loc)
-                        .map(|expr| Expr {
-                            expr,
-                            loc: self.loc.clone(),
-                        })?;
-                    tail = rest;
-                }
-                // method call on arbitrary expression
-                (Expr { expr, .. }, [Field(i), Call(a), rest @ ..]) => {
-                    // move the expr and args out of the slice
-                    let args = std::mem::take(a);
-                    let expr = mem::replace(expr, ast::Expr::val(false));
-                    // move the id out of the slice as well, to avoid cloning the internal string
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
-                    head = id.to_meth(expr, args, &self.loc).map(|expr| Expr {
-                        expr,
-                        loc: self.loc.clone(),
-                    })?;
-                    tail = rest;
+                    (
+                        id.to_meth(construct_expr_var(var, var_loc.clone()), args, &self.loc)?,
+                        rest,
+                    )
                 }
                 // method call on string literal (same as Expr case)
                 (StrLit { lit, loc: lit_loc }, [Field(i), Call(a), rest @ ..]) => {
@@ -1210,51 +1227,37 @@ impl Node<Option<cst::Member>> {
                             })))
                         }
                     };
-                    head = maybe_expr.and_then(|e| {
-                        id.to_meth(e, args, &self.loc).map(|expr| Expr {
-                            expr,
-                            loc: self.loc.clone(),
-                        })
-                    })?;
-                    tail = rest;
+                    (
+                        maybe_expr.and_then(|e| id.to_meth(e, args, &self.loc))?,
+                        rest,
+                    )
                 }
                 // access on arbitrary name - error
                 (Name { name, .. }, [Field(f), ..]) => {
-                    break Err(self
+                    return Err(self
                         .to_ast_err(ToASTErrorKind::InvalidAccess(
                             name.clone(),
                             f.to_string().into(),
                         ))
-                        .into())
+                        .into());
                 }
                 (Name { name, .. }, [Index(i), ..]) => {
-                    break Err(self
+                    return Err(self
                         .to_ast_err(ToASTErrorKind::InvalidIndex(name.clone(), i.clone()))
-                        .into())
+                        .into());
                 }
                 // attribute of variable
                 (Var { var, loc: var_loc }, [Field(i), rest @ ..]) => {
                     let var = mem::replace(var, ast::Var::Principal);
                     let id = mem::replace(i, ast::Id::new_unchecked(""));
-                    head = Expr {
-                        expr: construct_expr_attr(
+                    (
+                        construct_expr_attr(
                             construct_expr_var(var, var_loc.clone()),
                             id.into_smolstr(),
                             self.loc.clone(),
                         ),
-                        loc: self.loc.clone(),
-                    };
-                    tail = rest;
-                }
-                // field of arbitrary expr
-                (Expr { expr, .. }, [Field(i), rest @ ..]) => {
-                    let expr = mem::replace(expr, ast::Expr::val(false));
-                    let id = mem::replace(i, ast::Id::new_unchecked(""));
-                    head = Expr {
-                        expr: construct_expr_attr(expr, id.into_smolstr(), self.loc.clone()),
-                        loc: self.loc.clone(),
-                    };
-                    tail = rest;
+                        rest,
+                    )
                 }
                 // field of string literal (same as Expr case)
                 (StrLit { lit, loc: lit_loc }, [Field(i), rest @ ..]) => {
@@ -1267,35 +1270,24 @@ impl Node<Option<cst::Member>> {
                             })))
                         }
                     };
-                    head = maybe_expr.map(|e| Expr {
-                        expr: construct_expr_attr(e, id.into_smolstr(), self.loc.clone()),
-                        loc: self.loc.clone(),
-                    })?;
-                    tail = rest;
+                    (
+                        maybe_expr
+                            .map(|e| construct_expr_attr(e, id.into_smolstr(), self.loc.clone()))?,
+                        rest,
+                    )
                 }
                 // index into var
                 (Var { var, loc: var_loc }, [Index(i), rest @ ..]) => {
                     let var = mem::replace(var, ast::Var::Principal);
                     let s = mem::take(i);
-                    head = Expr {
-                        expr: construct_expr_attr(
+                    (
+                        construct_expr_attr(
                             construct_expr_var(var, var_loc.clone()),
                             s,
                             self.loc.clone(),
                         ),
-                        loc: self.loc.clone(),
-                    };
-                    tail = rest;
-                }
-                // index into arbitrary expr
-                (Expr { expr, .. }, [Index(i), rest @ ..]) => {
-                    let expr = mem::replace(expr, ast::Expr::val(false));
-                    let s = mem::take(i);
-                    head = Expr {
-                        expr: construct_expr_attr(expr, s, self.loc.clone()),
-                        loc: self.loc.clone(),
-                    };
-                    tail = rest;
+                        rest,
+                    )
                 }
                 // index into string literal (same as Expr case)
                 (StrLit { lit, loc: lit_loc }, [Index(i), rest @ ..]) => {
@@ -1308,14 +1300,25 @@ impl Node<Option<cst::Member>> {
                             })))
                         }
                     };
-                    head = maybe_expr.map(|e| Expr {
-                        expr: construct_expr_attr(e, id, self.loc.clone()),
-                        loc: self.loc.clone(),
-                    })?;
-                    tail = rest;
+                    (
+                        maybe_expr.map(|e| construct_expr_attr(e, id, self.loc.clone()))?,
+                        rest,
+                    )
                 }
             }
+        };
+
+        // After processing the first element, we know that `head` is always an
+        // expression, so we repeatedly apply `build_expr_access` on head
+        // without need to consider the other cases until we've consumed the
+        // list accesses.
+        while let Some((next, rest)) = tail.split_first_mut() {
+            (head, tail) = self.build_expr_access(&mut head, next, rest)?;
         }
+        Ok(ExprOrSpecial::Expr {
+            expr: head,
+            loc: self.loc.clone(),
+        })
     }
 }
 
