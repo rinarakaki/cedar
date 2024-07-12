@@ -29,7 +29,7 @@ use super::utils::remove_empty_lines;
 use super::config::{self, Config};
 use super::doc::*;
 
-fn tree_to_pretty<T: Doc>(t: &T, context: &mut config::Context<'_>) -> Result<String> {
+fn tree_to_pretty<T: Doc>(t: &T, context: &mut config::Context<'_, '_>) -> Result<String> {
     let mut w = Vec::new();
     let config = context.config;
     let doc = t.to_doc(context);
@@ -100,7 +100,7 @@ pub fn policies_str_to_pretty(ps: &str, config: &Config) -> Result<String> {
     let ast = cst
         .to_policyset()
         .wrap_err("cannot parse input policies to ASTs")?;
-    let (tokens, end_of_file_comment) =
+    let (tokens, mut end_of_file_comment) =
         get_token_stream(ps).ok_or(miette!("cannot get token stream"))?;
     let mut context = config::Context { config, tokens };
     let mut formatted_policies = cst
@@ -112,9 +112,13 @@ pub fn policies_str_to_pretty(ps: &str, config: &Config) -> Result<String> {
         .collect::<Result<Vec<String>>>()?
         .join("\n\n");
     // handle comment at the end of a policyset
-    if !end_of_file_comment.is_empty() {
+    if let Some(comment_line) = end_of_file_comment.next() {
         formatted_policies.push('\n');
-        formatted_policies.push_str(&end_of_file_comment);
+        formatted_policies.push_str(comment_line);
+        for comment_line in end_of_file_comment {
+            formatted_policies.push('\n');
+            formatted_policies.push_str(comment_line);
+        }
     }
 
     // add soundness check to make sure formatting doesn't alter policy ASTs
