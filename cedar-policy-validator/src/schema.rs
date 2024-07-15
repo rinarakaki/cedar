@@ -209,8 +209,9 @@ impl ValidatorSchema {
     pub fn from_file_natural(
         r: impl std::io::Read,
         extensions: Extensions<'_>,
-    ) -> std::result::Result<(Self, impl Iterator<Item = SchemaWarning>), HumanSchemaError> {
-        let (fragment, warnings) = SchemaFragment::from_file_natural(r)?;
+    ) -> std::result::Result<(Self, impl Iterator<Item = SchemaWarning> + '_), HumanSchemaError>
+    {
+        let (fragment, warnings) = SchemaFragment::from_file_natural(r, extensions)?;
         let schema_and_warnings =
             Self::from_schema_frag(fragment, ActionBehavior::default(), extensions)
                 .map(|schema| (schema, warnings))?;
@@ -219,11 +220,12 @@ impl ValidatorSchema {
 
     /// Construct a [`ValidatorSchema`] from a string containing Cedar "natural"
     /// schema syntax.
-    pub fn from_str_natural(
+    pub fn from_str_natural<'a>(
         src: &str,
-        extensions: Extensions<'_>,
-    ) -> std::result::Result<(Self, impl Iterator<Item = SchemaWarning>), HumanSchemaError> {
-        let (fragment, warnings) = SchemaFragment::from_str_natural(src)?;
+        extensions: Extensions<'a>,
+    ) -> std::result::Result<(Self, impl Iterator<Item = SchemaWarning> + 'a), HumanSchemaError>
+    {
+        let (fragment, warnings) = SchemaFragment::from_str_natural(src, extensions)?;
         let schema_and_warnings =
             Self::from_schema_frag(fragment, ActionBehavior::default(), extensions)
                 .map(|schema| (schema, warnings))?;
@@ -599,7 +601,7 @@ impl ValidatorSchema {
     /// This always returns a closed record type.
     ///
     /// Returns `None` if the action is not in the schema.
-    pub fn context_type(&self, action: &EntityUID) -> Option<Type> {
+    pub fn context_type(&self, action: &EntityUID) -> Option<&Type> {
         // INVARIANT: `ValidatorActionId::context_type` always returns a closed
         // record type
         self.get_action_id(action)
@@ -682,7 +684,7 @@ struct CommonTypeResolver<'a> {
     /// The dependency graph among common type names.
     /// The graph contains a vertex for each `Name` and `graph.get(u)` gives the set of vertices `v` for which `(u,v)` is a directed edge in the graph.
     /// A common type name is prefixed with the namespace id where it's declared.
-    graph: HashMap<Name, HashSet<Name>>,
+    graph: HashMap<&'a Name, HashSet<&'a Name>>,
 }
 
 impl<'a> CommonTypeResolver<'a> {
@@ -692,10 +694,7 @@ impl<'a> CommonTypeResolver<'a> {
     fn new(type_defs: &'a HashMap<Name, SchemaType<Name>>) -> Self {
         let mut graph = HashMap::new();
         for (name, ty) in type_defs {
-            graph.insert(
-                name.clone(),
-                HashSet::from_iter(ty.common_type_references().cloned()),
-            );
+            graph.insert(name, HashSet::from_iter(ty.common_type_references()));
         }
         Self { type_defs, graph }
     }
@@ -710,7 +709,7 @@ impl<'a> CommonTypeResolver<'a> {
     /// If there is a cycle, a type name involving in this cycle is the error
     ///
     /// It implements a variant of Kahn's algorithm
-    fn topo_sort(&self) -> std::result::Result<Vec<Name>, Name> {
+    fn topo_sort(&self) -> std::result::Result<Vec<&'a Name>, Name> {
         // The in-degree map
         // Note that the keys of this map may be a superset of all common type
         // names
@@ -731,8 +730,8 @@ impl<'a> CommonTypeResolver<'a> {
         }
 
         // The set that contains type names with zero incoming edges
-        let mut work_set: HashSet<&Name> = HashSet::new();
-        let mut res: Vec<Name> = Vec::new();
+        let mut work_set: HashSet<&'a Name> = HashSet::new();
+        let mut res: Vec<&'a Name> = Vec::new();
 
         // Find all type names with zero incoming edges
         for (name, degree) in indegrees.iter() {
@@ -741,7 +740,7 @@ impl<'a> CommonTypeResolver<'a> {
                 work_set.insert(name);
                 // The result only contains *declared* type names
                 if self.graph.contains_key(name) {
-                    res.push(name.clone());
+                    res.push(name);
                 }
             }
         }
@@ -765,7 +764,7 @@ impl<'a> CommonTypeResolver<'a> {
                         if *degree == 0 {
                             work_set.insert(dep);
                             if self.graph.contains_key(dep) {
-                                res.push(dep.clone());
+                                res.push(dep);
                             }
                         }
                     }
@@ -775,7 +774,7 @@ impl<'a> CommonTypeResolver<'a> {
 
         // The set of nodes that have not been added to the result
         // i.e., there are still in-coming edges and hence exists a cycle
-        let mut set: HashSet<&Name> = HashSet::from_iter(self.graph.keys().clone());
+        let mut set: HashSet<&Name> = HashSet::from_iter(self.graph.keys().cloned());
         for name in res.iter() {
             set.remove(name);
         }
@@ -796,7 +795,7 @@ impl<'a> CommonTypeResolver<'a> {
         ty: SchemaType<Name>,
     ) -> Result<SchemaType<Name>> {
         match ty {
-            SchemaType::TypeDef { type_name } => resolve_table
+            SchemaType::CommonTypeRef { type_name } => resolve_table
                 .get(&type_name)
                 .ok_or(SchemaError::UndeclaredCommonTypes(
                     UndeclaredCommonTypesError(type_name),
@@ -833,7 +832,7 @@ impl<'a> CommonTypeResolver<'a> {
 
     // Resolve common type references, returning a map from (fully-qualified)
     // [`Name`] of a common type to its [`Type`] definition
-    fn resolve(&self, extensions: Extensions<'_>) -> Result<HashMap<Name, Type>> {
+    fn resolve(&self, extensions: Extensions<'_>) -> Result<HashMap<&'a Name, Type>> {
         let sorted_names = self.topo_sort().map_err(|n| {
             SchemaError::CycleInCommonTypeReferences(CycleInCommonTypeReferencesError(n))
         })?;
@@ -841,14 +840,14 @@ impl<'a> CommonTypeResolver<'a> {
         let mut resolve_table = HashMap::new();
         let mut tys = HashMap::new();
 
-        for name in sorted_names.iter() {
+        for &name in sorted_names.iter() {
             // PANIC SAFETY: `name.basename()` should be an existing common type id
             #[allow(clippy::unwrap_used)]
             let ty = self.type_defs.get(name).unwrap();
             let substituted_ty = Self::resolve_type(&resolve_table, ty.clone())?;
             resolve_table.insert(name, substituted_ty.clone());
             tys.insert(
-                name.clone(),
+                name,
                 try_schema_type_into_validator_type(substituted_ty, extensions)?
                     .resolve_type_defs(&HashMap::new())?,
             );
@@ -2333,6 +2332,33 @@ mod test {
                     .help("did you mean `ipaddr`?")
                     .build());
         });
+
+        let src: serde_json::Value = json!({
+            "": {
+                "commonTypes": {
+                    "ty": {
+                        "type": "Record",
+                        "attributes": {
+                            "a": {
+                                "type": "Extension",
+                                "name": "partial_evaluation",
+                            }
+                        }
+                    }
+                },
+                "entityTypes": { },
+                "actions": { },
+            }
+        });
+        let schema = ValidatorSchema::from_json_value(src.clone(), Extensions::all_available());
+        assert_matches!(schema, Err(e) => {
+            expect_err(
+                &src,
+                &miette::Report::new(e),
+                &ExpectedErrorMessageBuilder::error("unknown extension type `partial_evaluation`")
+                    .help("did you mean `decimal`?")
+                    .build());
+        });
     }
 
     #[test]
@@ -2567,7 +2593,9 @@ mod test_resolver {
             type_defs.extend(def.type_defs.type_defs.into_iter());
         }
         let resolver = CommonTypeResolver::new(&type_defs);
-        resolver.resolve(Extensions::all_available())
+        resolver
+            .resolve(Extensions::all_available())
+            .map(|map| map.into_iter().map(|(k, v)| (k.clone(), v)).collect())
     }
 
     #[test]

@@ -550,7 +550,7 @@ impl ActionFragment {
     }
 }
 
-type ResolveFunc<T> = dyn FnOnce(&HashMap<Name, Type>) -> Result<T>;
+type ResolveFunc<T> = dyn FnOnce(&HashMap<&Name, Type>) -> Result<T>;
 /// Represent a type that might be defined in terms of some type definitions
 /// which are not necessarily available in the current namespace.
 pub(crate) enum WithUnresolvedTypeDefs<T> {
@@ -559,7 +559,7 @@ pub(crate) enum WithUnresolvedTypeDefs<T> {
 }
 
 impl<T: 'static> WithUnresolvedTypeDefs<T> {
-    pub fn new(f: impl FnOnce(&HashMap<Name, Type>) -> Result<T> + 'static) -> Self {
+    pub fn new(f: impl FnOnce(&HashMap<&Name, Type>) -> Result<T> + 'static) -> Self {
         Self::WithUnresolved(Box::new(f))
     }
 
@@ -574,7 +574,7 @@ impl<T: 'static> WithUnresolvedTypeDefs<T> {
 
     /// Instantiate any names referencing types with the definition of the type
     /// from the input `HashMap`.
-    pub fn resolve_type_defs(self, type_defs: &HashMap<Name, Type>) -> Result<T> {
+    pub fn resolve_type_defs(self, type_defs: &HashMap<&Name, Type>) -> Result<T> {
         match self {
             WithUnresolvedTypeDefs::WithUnresolved(f) => f(type_defs),
             WithUnresolvedTypeDefs::WithoutUnresolved(v) => Ok(v),
@@ -682,13 +682,13 @@ pub(crate) fn try_schema_type_into_validator_type(
         }
         SchemaType::Type(SchemaTypeVariant::Extension { name }) => {
             let extension_type_name = Name::unqualified_name(name);
-            if extensions.ext_names().contains(&extension_type_name) {
+            if extensions.ext_types().contains(&extension_type_name) {
                 Ok(Type::extension(extension_type_name).into())
             } else {
                 let suggested_replacement = fuzzy_search(
                     &extension_type_name.to_string(),
                     &extensions
-                        .ext_names()
+                        .ext_types()
                         .map(|n| n.to_string())
                         .collect::<Vec<_>>(),
                 );
@@ -700,12 +700,14 @@ pub(crate) fn try_schema_type_into_validator_type(
                 ))
             }
         }
-        SchemaType::TypeDef { type_name } => Ok(WithUnresolvedTypeDefs::new(move |typ_defs| {
-            typ_defs
-                .get(&type_name)
-                .cloned()
-                .ok_or(UndeclaredCommonTypesError(type_name).into())
-        })),
+        SchemaType::CommonTypeRef { type_name } => {
+            Ok(WithUnresolvedTypeDefs::new(move |typ_defs| {
+                typ_defs
+                    .get(&type_name)
+                    .cloned()
+                    .ok_or(UndeclaredCommonTypesError(type_name).into())
+            }))
+        }
     }
 }
 

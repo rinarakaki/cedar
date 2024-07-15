@@ -24,3 +24,4 @@ mod validate;
 pub use validate::*;
 mod format;
 pub use format::*;
+mod tests;
