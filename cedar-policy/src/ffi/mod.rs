@@ -24,4 +24,6 @@ mod validate;
 pub use validate::*;
 mod format;
 pub use format::*;
+mod check_parse;
+pub use check_parse::*;
 mod tests;

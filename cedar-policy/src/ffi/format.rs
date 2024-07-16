@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-//! This module contains the formatter entry points that other language FFIs can
-//! call
+//! JSON FFI entry points for the Cedar policy formatter
+
 use super::utils::DetailedError;
 use cedar_policy_formatter::{policies_str_to_pretty, Config};
 use serde::{Deserialize, Serialize};
@@ -23,11 +23,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wasm")]
 extern crate tsify;
 
-/// Apply the Cedar policy formatter to a string defining a policy set in the
-/// Cedar policy format.
-///
-/// This is the formatter interface, using [`FormattingCall`] and
-/// [`FormattingAnswer`] types
+/// Apply the Cedar policy formatter to a policy set in the Cedar policy format.
 pub fn format(call: FormattingCall) -> FormattingAnswer {
     let config = Config {
         line_width: call.line_width,
@@ -43,8 +39,8 @@ pub fn format(call: FormattingCall) -> FormattingAnswer {
     }
 }
 
-/// Input is a JSON encoding of [`FormattingCall`] and output is a JSON
-/// encoding of [`FormattingAnswer`]
+/// Apply the Cedar policy formatter. Input is a JSON encoding of
+/// [`FormattingCall`] and output is a JSON encoding of [`FormattingAnswer`].
 ///
 /// # Errors
 ///
@@ -55,8 +51,8 @@ pub fn format_json(json: serde_json::Value) -> Result<serde_json::Value, serde_j
     serde_json::to_value(ans)
 }
 
-/// Input and output are strings containing serialized JSON, in the shapes
-/// expected by [`format_json()`]
+/// Apply the Cedar policy formatter. Input and output are strings containing
+/// serialized JSON, in the shapes expected by [`format_json()`].
 ///
 /// # Errors
 ///
@@ -88,7 +84,6 @@ pub struct FormattingCall {
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
 pub enum FormattingAnswer {
     /// Represents a failure to call the formatter
     Failure {
