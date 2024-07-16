@@ -79,29 +79,6 @@ pub fn policy_text_to_json(cedar_str: &str) -> PolicyToJsonResult {
     }
 }
 
-#[derive(Tsify, Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-/// struct that defines the result for the syntax validation function
-pub enum CheckParsePolicySetResult {
-    /// represents successful syntax validation
-    Success { policies: i32, templates: i32 },
-    /// represents a syntax error and encloses a vector of the errors
-    Error { errors: Vec<String> },
-}
-
-#[derive(Tsify, Debug, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "camelCase")]
-#[tsify(into_wasm_abi, from_wasm_abi)]
-pub enum CheckParseTemplateResult {
-    /// represents successful template validation
-    Success { slots: Vec<String> },
-    /// represents errors in the template validation and encloses a vector of the errors
-    Error { errors: Vec<String> },
-}
-
 #[cfg(test)]
 mod test {
 
