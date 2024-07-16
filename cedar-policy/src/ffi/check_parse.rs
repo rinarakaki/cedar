@@ -18,11 +18,14 @@
 
 use super::{utils::DetailedError, Context, Entities, EntityUid, PolicySet, Schema};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[cfg(feature = "wasm")]
 extern crate tsify;
 
 /// Check whether a policy set successfully parses.
+#[wasm_bindgen(js_name = "checkParsePolicySet")]
 pub fn check_parse_policy_set(policies: PolicySet) -> CheckParseAnswer {
     policies.parse().into()
 }
@@ -55,6 +58,7 @@ pub fn check_parse_policy_set_json_str(json: &str) -> Result<String, serde_json:
 }
 
 /// Check whether a schema successfully parses.
+#[wasm_bindgen(js_name = "checkParseSchema")]
 pub fn check_parse_schema(schema: Schema) -> CheckParseAnswer {
     schema.parse().into()
 }
@@ -86,6 +90,7 @@ pub fn check_parse_schema_json_str(json: &str) -> Result<String, serde_json::Err
 }
 
 /// Check whether a set of entities successfully parses.
+#[wasm_bindgen(js_name = "checkParseEntities")]
 pub fn check_parse_entities(call: EntitiesParsingCall) -> CheckParseAnswer {
     let schema = match call.schema.map(|s| s.parse().map(|res| res.0)).transpose() {
         Ok(schema) => schema,
@@ -127,6 +132,7 @@ pub fn check_parse_entities_json_str(json: &str) -> Result<String, serde_json::E
 }
 
 /// Check whether a context successfully parses.
+#[wasm_bindgen(js_name = "checkParseContext")]
 pub fn check_parse_context(call: ContextParsingCall) -> CheckParseAnswer {
     let action = match call.action.map(|a| a.parse(Some("action"))).transpose() {
         Ok(action) => action,

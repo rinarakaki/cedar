@@ -19,11 +19,14 @@
 use super::utils::DetailedError;
 use cedar_policy_formatter::{policies_str_to_pretty, Config};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[cfg(feature = "wasm")]
 extern crate tsify;
 
 /// Apply the Cedar policy formatter to a policy set in the Cedar policy format.
+#[wasm_bindgen(js_name = "formatPolicies")]
 pub fn format(call: FormattingCall) -> FormattingAnswer {
     let config = Config {
         line_width: call.line_width,

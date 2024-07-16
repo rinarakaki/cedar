@@ -20,6 +20,8 @@
 use super::utils::{DetailedError, PolicySet, Schema, WithWarnings};
 use crate::{PolicyId, ValidationMode, Validator};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[cfg(feature = "wasm")]
 extern crate tsify;
@@ -28,6 +30,7 @@ extern crate tsify;
 ///
 /// This is the basic validator interface, using [`ValidationCall`] and
 /// [`ValidationAnswer`] types
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = "validate"))]
 pub fn validate(call: ValidationCall) -> ValidationAnswer {
     match call.get_components() {
         WithWarnings {

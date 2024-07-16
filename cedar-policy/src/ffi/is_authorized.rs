@@ -29,6 +29,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(feature = "partial-eval")]
 use std::convert::Infallible;
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[cfg(feature = "wasm")]
 extern crate tsify;
@@ -39,6 +41,7 @@ thread_local!(
 );
 
 /// Basic interface, using [`AuthorizationCall`] and [`AuthorizationAnswer`] types
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = "isAuthorized"))]
 pub fn is_authorized(call: AuthorizationCall) -> AuthorizationAnswer {
     match call.parse() {
         WithWarnings {
